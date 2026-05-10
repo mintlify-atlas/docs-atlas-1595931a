@@ -1,0 +1,75 @@
+---
+title: 'Environment variables reference for Blockchain Drive'
+description: 'Complete reference for every environment variable used by Blockchain Drive. Configure server, database, IPFS, blockchain, and feature-flag settings.'
+---
+
+Blockchain Drive reads all runtime configuration from a `.env` file at the project root. Copy `.env.example` to `.env` and fill in each value before starting the server. The sections below describe every variable, its default (where one exists), and when you need to change it.
+
+## Server
+
+These variables control the Express API process itself.
+
+| Variable | Default | Description |
+|---|---|---|
+| `PORT` | `5000` | Port the Express API listens on. Keep this different from the IPFS Kubo daemon port (commonly `5002`). |
+| `SESSION_SECRET` | _(none)_ | Secret used to sign session cookies. Must be a long, random string in production. |
+| `NODE_ENV` | _(none)_ | Set to `production` to enable secure cookies and production-mode behaviour across the stack. |
+
+<Tip>
+Generate `SESSION_SECRET` with `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` and store the result only in your environment — never in source control.
+</Tip>
+
+## Database
+
+Blockchain Drive connects to a MongoDB instance. The primary connection variable is `MONGO_URI`; `MONGO_DB_NAME` (or the legacy alias `DB_NAME`) selects the database.
+
+| Variable | Default | Description |
+|---|---|---|
+| `MONGO_URI` | `mongodb://127.0.0.1:27017` | Full MongoDB connection URI. Override for Atlas, replica sets, or authenticated clusters. |
+| `MONGO_DB_NAME` | `ipfs_app` | MongoDB database name. Also accepted as `DB_NAME` for backwards compatibility. |
+
+## IPFS
+
+Blockchain Drive proxies file uploads and retrievals through a locally running IPFS Kubo daemon. These variables point the backend at that daemon.
+
+| Variable | Default | Description |
+|---|---|---|
+| `IPFS_API_URL` | `http://127.0.0.1:5002/api/v0` | URL of the Kubo API endpoint. Matches the `Addresses.API` value in `ipfs config show`. |
+| `IPFS_GATEWAY_URL` | `http://127.0.0.1:5002` | Base URL of the IPFS HTTP gateway used for expiring file links (e.g. `http://127.0.0.1:5002/ipfs/<cid>`). |
+| `BACKEND_URL` | `http://127.0.0.1:5000` | Full URL of the Express API. Used by the Next.js frontend to proxy `/auth`, `/files`, `/upload`, and similar routes. Must point to the Node server, not IPFS. |
+| `NEXT_PUBLIC_BACKEND_URL` | _(unset)_ | Browser-facing API base URL. Leave unset so the browser calls the Next.js origin and rewrites proxy to Express — this keeps session cookies working. Set only when the API runs on a separate host from the frontend. |
+
+<Note>
+The IPFS daemon and the Express API are two separate processes running on different ports. `IPFS_API_URL` / `IPFS_GATEWAY_URL` point at Kubo; `BACKEND_URL` points at the Node/Express server.
+</Note>
+
+## Blockchain
+
+These variables connect the backend to an Ethereum-compatible network and to the deployed Blockchain Drive smart contracts.
+
+| Variable | Default | Description |
+|---|---|---|
+| `RPC_URL` | `https://rpc-mumbai.maticvigil.com` | JSON-RPC endpoint for the target network (e.g. Polygon Mumbai, Infura, Alchemy, or a local Hardhat node). |
+| `STORAGE_ALLOC_CONTRACT` | `0x000…0001` | Address of the deployed storage allocation contract. Update after running the deployment script. |
+| `DRIVE_V2_CONTRACT` | `0x000…0002` | Address of the deployed Drive V2 contract. Update after running the deployment script. |
+| `ADMIN_PRIVATE_KEY` | _(none)_ | Private key of the admin wallet used by the backend to sign on-chain transactions (pool allocation, quota assignment, sharing). |
+| `MAIN_ADMIN_WALLET` | _(none)_ | Ethereum wallet address that receives admin rights automatically on its first login. |
+
+<Warning>
+`ADMIN_PRIVATE_KEY` grants full control over the admin wallet and the deployed contracts. **Never commit this value to git or expose it in logs.** Use a secrets manager (AWS Secrets Manager, Vault, Doppler, etc.) in any shared or production environment. The `.env` file must be listed in `.gitignore`.
+</Warning>
+
+## Feature flags
+
+These flags let you run Blockchain Drive in mock mode during development and progressively enable on-chain enforcement as your deployment matures.
+
+| Variable | Default | Description |
+|---|---|---|
+| `USE_REAL_CONTRACTS` | `false` | When `false`, contract calls are mocked so uploads and access work without a deployed contract. Set to `true` in production after deploying the contracts. |
+| `ENFORCE_QUOTA_ON_UPLOAD` | `false` | When `false`, uploads succeed even if the on-chain quota check fails. Set to `true` to block uploads once a user exceeds their allocated quota. |
+| `ENFORCE_CONTRACT_PERMISSIONS` | `false` | When `false`, the backend falls back to database RBAC when contract permission checks are unavailable. Set to `true` to deny access whenever the smart-contract check fails. |
+| `ENFORCE_CONTRACT_SHARING` | `false` | When `false`, file shares are written to the database even if the on-chain `shareFile` call fails. Set to `true` to make the hybrid model fully consistent — a share is only recorded if the contract call succeeds. |
+
+<Tip>
+Start with all four flags at their defaults (`false`) during development. Enable `USE_REAL_CONTRACTS=true` first, verify everything works, then progressively enable the three `ENFORCE_*` flags one at a time.
+</Tip>

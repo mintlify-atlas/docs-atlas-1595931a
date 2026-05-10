@@ -1,0 +1,129 @@
+---
+title: 'Upload, browse, and manage files in Blockchain Drive'
+description: 'Upload, browse, view, download, and delete files stored on IPFS. Anchor any file to the Ethereum blockchain for immutable proof of existence.'
+---
+
+Blockchain Drive stores every file on IPFS and optionally records its content identifier (CID) on the Ethereum blockchain. The file browser gives you a familiar grid or list interface on top of this decentralized backend, so you can manage files without thinking about the underlying protocol.
+
+## Uploading files
+
+The maximum file size per upload is **500 MB**. Files are uploaded to IPFS and immediately available through the in-app viewer or the IPFS gateway.
+
+<Steps>
+  <Step title="Open the upload dialog">
+    Click **Upload** in the action bar at the top of the file browser. The `UploadZone` dialog opens.
+  </Step>
+  <Step title="Select a file">
+    Choose a file from your device. You can optionally enter a custom filename and a short description. If you leave the filename blank, the original filename is used.
+  </Step>
+  <Step title="Configure encryption (optional)">
+    Toggle encryption on if you want the file encrypted before it leaves your browser. See [Encryption](/features/encryption) for details on the two available methods.
+  </Step>
+  <Step title="Submit">
+    Click **Upload**. The app sends the file to the server, which pins it to IPFS and records the CID in the database. On success you receive the IPFS CID and, if blockchain recording is enabled, a transaction hash.
+  </Step>
+</Steps>
+
+<Note>
+  Upload is blocked if the target drive has exceeded its quota limit. You will see a `DRIVE_QUOTA_EXCEEDED` error. Contact the drive admin to increase the quota or free up space.
+</Note>
+
+## Browsing files
+
+The file browser shows the current drive's files and folders together. Use the **ViewToggle** control in the action bar to switch between grid and list layouts.
+
+<CardGroup cols={2}>
+  <Card title="Grid view" icon="grid-2">
+    Files and folders appear as cards. Good for visual file types such as images and PDFs.
+  </Card>
+  <Card title="List view" icon="list">
+    Files and folders appear in a compact table with name, size, and last modified columns. Good for drives with many files.
+  </Card>
+</CardGroup>
+
+### Searching
+
+The search bar in the top navigation filters the current folder's files and folders in real time. The filter matches against the file's display name (or the original name for encrypted files). Folders are always sorted before files in the results.
+
+## Navigating folders
+
+Folders appear at the top of the browser alongside files. Click a folder to enter it. The breadcrumb trail below the action bar shows your current location. Click any segment of the breadcrumb to jump back to that level.
+
+<Tip>
+  Click the drive name in the breadcrumb to jump all the way back to the drive root.
+</Tip>
+
+## Viewing files in-app
+
+Click **View** on any file to open it in the `FileViewerModal` without leaving the page. The viewer fetches the file content from `/files/:id/content` and displays it inline. Encrypted files are decrypted in-browser before display — your wallet is not prompted because the file key is cached after the first decrypt operation.
+
+## Downloading files
+
+Click **Download** on any file. The app fetches both the file content and its encryption metadata from `/files/:id/crypto`.
+
+- **Unencrypted files**: the file is downloaded immediately with its original filename and MIME type.
+- **Encrypted files**: the app calls your MetaMask wallet to decrypt the file's encryption key, then decrypts the file in-browser. The download then proceeds with the original filename and MIME type stored in the encryption metadata.
+
+<Warning>
+  Downloading an encrypted file requires your MetaMask wallet to be connected. If you disconnect your wallet, re-connect it and try again.
+</Warning>
+
+## Creating folders
+
+Click **New Folder** in the action bar. Enter a name in the `NewFolderDialog` and confirm. The folder is created inside the current folder (or at the drive root if you are not inside a folder). Only drive members with the **admin** or **editor** role can create folders.
+
+## Deleting files
+
+<Warning>
+  Only the file owner (or a drive admin) can delete a file. Deletion is permanent — the database record and all shares are removed. The IPFS content may remain pinned depending on your gateway configuration.
+</Warning>
+
+Click **Delete** on a file to open the `DeleteDialog`. Confirm the prompt to proceed. Deleting a file also removes all shares associated with it and recalculates the drive's used quota.
+
+## Anchoring files on the blockchain
+
+Anchoring records a file's IPFS CID and content hash on the Ethereum blockchain, creating an immutable, timestamped proof that the file existed at a specific point in time.
+
+<Steps>
+  <Step title="Select a file">
+    Click the checkbox on a file in the browser to select it. You can select one file at a time for anchoring.
+  </Step>
+  <Step title="Click Anchor Selected">
+    Click the **Anchor Selected** button in the toolbar below the file list.
+  </Step>
+  <Step title="Confirm the transaction">
+    The app submits a blockchain transaction from your connected wallet. A confirmation dialog displays the resulting transaction hash once the transaction is accepted.
+  </Step>
+</Steps>
+
+<Note>
+  Anchoring costs gas. The amount depends on current network conditions. Files that have already been anchored display their transaction hash (`txHash`) in the file list.
+</Note>
+
+## Expiring links
+
+You can share a time-limited link to any file you own or have editor access to.
+
+<Steps>
+  <Step title="Generate the link">
+    Call `POST /files/:id/link` with a body of `{ "expiresInMinutes": 60 }`. The default expiry is 60 minutes.
+  </Step>
+  <Step title="Share the URL">
+    The response contains a `url` field (e.g. `/l/<token>`) and an `expiresAt` timestamp. Share this URL with the recipient.
+  </Step>
+  <Step title="Link resolution">
+    When the recipient visits the link, the server validates the token and redirects them to the IPFS gateway URL for the file's CID. After the expiry time, the link returns HTTP 410.
+  </Step>
+</Steps>
+
+```json
+// POST /files/42/link
+// Request body
+{ "expiresInMinutes": 120 }
+
+// Response
+{
+  "url": "/l/a3f9c2e1d04b87f6",
+  "expiresAt": "2026-05-10 14:00:00"
+}
+```

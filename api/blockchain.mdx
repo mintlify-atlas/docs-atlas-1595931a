@@ -1,0 +1,135 @@
+---
+title: "Blockchain — Contract configuration and quota status"
+description: "Inspect the active Ethereum contract configuration and query on-chain storage quota for the authenticated user wallet. Requires a session cookie."
+---
+
+Blockchain Drive can operate in two modes: **mock mode**, where all quota and permission checks run against the application database only, and **real-contracts mode**, where the server communicates with deployed Ethereum smart contracts for quota enforcement, permission verification, and share recording.
+
+These endpoints expose the current runtime configuration and let you query the on-chain quota state for your wallet without leaving the API.
+
+Both endpoints require an authenticated session cookie.
+
+---
+
+## GET /blockchain/status
+
+Returns the current blockchain configuration derived from server-side environment variables. Use this to determine which contract features are active before making contract-dependent calls.
+
+```bash
+curl "https://api.blockchaindrive.io/blockchain/status" \
+  --cookie "connect.sid=..."
+```
+
+<ResponseField name="useRealContracts" type="boolean" required>
+  `true` when the server is connected to live Ethereum contracts (`USE_REAL_CONTRACTS=true`). `false` in mock/development mode.
+</ResponseField>
+
+<ResponseField name="rpcUrl" type="string | null" required>
+  The JSON-RPC endpoint the server is connected to (e.g. an Alchemy or Infura URL), or `null` in mock mode.
+</ResponseField>
+
+<ResponseField name="storageAllocContract" type="string | null" required>
+  Deployed address of the `StorageAlloc` contract, or `null` if not configured.
+</ResponseField>
+
+<ResponseField name="driveV2Contract" type="string | null" required>
+  Deployed address of the `DriveV2` contract, or `null` if not configured.
+</ResponseField>
+
+<ResponseField name="enforceQuotaOnUpload" type="boolean" required>
+  When `true`, the server checks the on-chain quota before accepting an upload and rejects it with `QUOTA_EXCEEDED` if the user is over their limit.
+</ResponseField>
+
+<ResponseField name="enforceContractPermissions" type="boolean" required>
+  When `true`, file-level permission checks consult the `DriveV2` contract in addition to the database RBAC table.
+</ResponseField>
+
+<ResponseField name="enforceContractSharing" type="boolean" required>
+  When `true`, share operations must succeed on-chain before the application records them.
+</ResponseField>
+
+```json
+{
+  "useRealContracts": true,
+  "rpcUrl": "https://eth-sepolia.g.alchemy.com/v2/...",
+  "storageAllocContract": "0x1234abcd...",
+  "driveV2Contract": "0x5678efgh...",
+  "enforceQuotaOnUpload": true,
+  "enforceContractPermissions": false,
+  "enforceContractSharing": false
+}
+```
+
+<Note>
+  In development environments, `useRealContracts` is typically `false` and all `enforce*` flags are `false`. Quota and permission decisions fall back to the application database in that case.
+</Note>
+
+---
+
+## GET /blockchain/quota
+
+Returns on-chain quota statistics for the wallet address linked to the authenticated session. When running in mock mode the contract fields are returned as `null` and `mode` is set to `"mock"`.
+
+```bash
+curl "https://api.blockchaindrive.io/blockchain/quota" \
+  --cookie "connect.sid=..."
+```
+
+<ResponseField name="walletAddress" type="string" required>
+  Ethereum wallet address associated with the authenticated user.
+</ResponseField>
+
+<ResponseField name="mode" type="string" required>
+  `"real"` when the response reflects live contract state, `"mock"` otherwise.
+</ResponseField>
+
+<ResponseField name="tier" type="string | null" required>
+  Storage tier assigned by the contract (e.g. `free`, `pro`). `null` in mock mode.
+</ResponseField>
+
+<ResponseField name="quotaLimitBytes" type="string | null" required>
+  On-chain quota ceiling in bytes (returned as a string to preserve BigInt precision). `null` in mock mode.
+</ResponseField>
+
+<ResponseField name="usedBytes" type="string | null" required>
+  Bytes consumed according to the contract. `null` in mock mode.
+</ResponseField>
+
+<ResponseField name="remainingBytes" type="string | null" required>
+  Remaining contract quota in bytes. `null` in mock mode.
+</ResponseField>
+
+<ResponseField name="usagePercent" type="number | null" required>
+  Usage as a percentage (0–100). `null` in mock mode.
+</ResponseField>
+
+**Real-contracts response:**
+
+```json
+{
+  "walletAddress": "0xabc123...",
+  "mode": "real",
+  "tier": "pro",
+  "quotaLimitBytes": "10737418240",
+  "usedBytes": "2147483648",
+  "remainingBytes": "8589934592",
+  "usagePercent": 20
+}
+```
+
+**Mock-mode response:**
+
+```json
+{
+  "walletAddress": "0xabc123...",
+  "mode": "mock",
+  "quotaLimitBytes": null,
+  "usedBytes": null,
+  "remainingBytes": null,
+  "usagePercent": null
+}
+```
+
+<Tip>
+  For day-to-day quota display in the UI, prefer `GET /me` which returns database-computed quota values that are always available regardless of contract mode. Use this endpoint when you specifically need to verify the on-chain state or debug quota enforcement issues.
+</Tip>

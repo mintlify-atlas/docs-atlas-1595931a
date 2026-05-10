@@ -1,0 +1,227 @@
+---
+title: "Drives — Collaborative storage with role-based access"
+description: "Create and manage collaborative drives with per-drive quotas, role-based membership, and folder hierarchies. All endpoints require a session cookie."
+---
+
+Drives are named storage spaces that multiple users can share. Each drive has an owner (the creator), an optional quota limit, and a membership list where each member is assigned a role: `admin`, `editor`, or `viewer`. Files and folders exist within drives, and all access checks are enforced per drive.
+
+Every user also has a personal default drive created automatically on first login.
+
+All drive endpoints require an authenticated session. A 401 is returned when the session cookie is absent or expired.
+
+---
+
+## GET /api/drives/me
+
+Lists all drives the authenticated user belongs to, including drives they own and drives they have been invited to.
+
+```bash
+curl "https://api.blockchaindrive.io/api/drives/me" \
+  --cookie "connect.sid=..."
+```
+
+Returns an array of drive objects. Each object includes at minimum: `id`, `name`, `owner_id`, `quota_limit_bytes`, and the caller's membership role.
+
+---
+
+## POST /api/drives
+
+Creates a new collaborative drive owned by the authenticated user.
+
+<ParamField body="name" type="string" required>
+  Display name for the drive.
+</ParamField>
+
+<ParamField body="quotaLimitBytes" type="number">
+  Maximum storage allowed for this drive in bytes. Defaults to `0` (unlimited until the admin sets a platform-level cap).
+</ParamField>
+
+```bash
+curl -X POST https://api.blockchaindrive.io/api/drives \
+  -H "Content-Type: application/json" \
+  --cookie "connect.sid=..." \
+  -d '{"name":"Team Alpha","quotaLimitBytes":5368709120}'
+```
+
+Returns the created drive object.
+
+---
+
+## GET /api/drives/:driveId/members
+
+Returns the member list for a drive. The caller must be a member of the drive (any role).
+
+<ParamField path="driveId" type="number" required>
+  Numeric ID of the drive.
+</ParamField>
+
+```bash
+curl "https://api.blockchaindrive.io/api/drives/7/members" \
+  --cookie "connect.sid=..."
+```
+
+Returns an array of member objects, each including `userId`, `username`, `walletAddress`, and `role`.
+
+**Errors:** `403` ACCESS_DENIED if the caller is not a member, `404` drive not found.
+
+---
+
+## POST /api/drives/:driveId/invite
+
+Invites a user to a drive. The caller must have the `admin` role on the drive.
+
+<ParamField path="driveId" type="number" required>
+  Numeric ID of the drive.
+</ParamField>
+
+<ParamField body="identifier" type="string" required>
+  Username or Ethereum wallet address of the user to invite.
+</ParamField>
+
+<ParamField body="role" type="string" required>
+  Role to assign. One of `admin`, `editor`, or `viewer`.
+</ParamField>
+
+```bash
+curl -X POST https://api.blockchaindrive.io/api/drives/7/invite \
+  -H "Content-Type: application/json" \
+  --cookie "connect.sid=..." \
+  -d '{"identifier":"bob_eth","role":"editor"}'
+```
+
+```json
+{ "success": true, "member": { "userId": 99, "role": "editor" } }
+```
+
+**Errors:** `400` missing identifier, `403` caller lacks admin role, `404` target user not found.
+
+<Note>
+  Inviting a user who is already a member updates their role to the value provided.
+</Note>
+
+---
+
+## DELETE /api/drives/:driveId/members/:userId
+
+Removes a member from a drive. The caller must have the `admin` role.
+
+<ParamField path="driveId" type="number" required>
+  Numeric ID of the drive.
+</ParamField>
+
+<ParamField path="userId" type="number" required>
+  Numeric ID of the user to remove.
+</ParamField>
+
+```bash
+curl -X DELETE "https://api.blockchaindrive.io/api/drives/7/members/99" \
+  --cookie "connect.sid=..."
+```
+
+```json
+{ "success": true }
+```
+
+**Errors:** `403` ACCESS_DENIED, `404` member not found.
+
+<Warning>
+  Removing a member immediately revokes their access to all files within the drive. This action cannot be undone without re-inviting the user.
+</Warning>
+
+---
+
+## POST /api/drives/:driveId/quota
+
+Updates the storage quota for a drive. The caller must have the `admin` role on the drive.
+
+<ParamField path="driveId" type="number" required>
+  Numeric ID of the drive.
+</ParamField>
+
+<ParamField body="quotaLimitBytes" type="number" required>
+  New quota limit in bytes. Set to `0` to remove the cap.
+</ParamField>
+
+```bash
+curl -X POST https://api.blockchaindrive.io/api/drives/7/quota \
+  -H "Content-Type: application/json" \
+  --cookie "connect.sid=..." \
+  -d '{"quotaLimitBytes":10737418240}'
+```
+
+```json
+{ "success": true }
+```
+
+**Errors:** `403` ACCESS_DENIED (caller is not a drive admin), `404` drive not found.
+
+---
+
+## GET /api/drives/:driveId/files
+
+Lists files stored in a drive, optionally filtered to a specific folder. The caller must have at least `viewer` role.
+
+<ParamField path="driveId" type="number" required>
+  Numeric ID of the drive.
+</ParamField>
+
+<ParamField query="folderId" type="number">
+  Restrict results to files in this folder. Omit to list files in the drive root.
+</ParamField>
+
+```bash
+curl "https://api.blockchaindrive.io/api/drives/7/files?folderId=3" \
+  --cookie "connect.sid=..."
+```
+
+Returns an array of file objects with the same shape as `GET /files`.
+
+---
+
+## GET /api/drives/:driveId/folders
+
+Lists folders within a drive. The caller must have at least `viewer` role.
+
+<ParamField path="driveId" type="number" required>
+  Numeric ID of the drive.
+</ParamField>
+
+<ParamField query="parentFolderId" type="number">
+  List only folders whose parent is this folder. Omit to list top-level folders.
+</ParamField>
+
+```bash
+curl "https://api.blockchaindrive.io/api/drives/7/folders" \
+  --cookie "connect.sid=..."
+```
+
+Returns an array of folder objects including `id`, `name`, `parentFolderId`, `driveId`, and `createdBy`.
+
+---
+
+## POST /api/drives/:driveId/folders
+
+Creates a new folder inside a drive. The caller must have at least `editor` role.
+
+<ParamField path="driveId" type="number" required>
+  Numeric ID of the drive.
+</ParamField>
+
+<ParamField body="name" type="string" required>
+  Display name for the folder.
+</ParamField>
+
+<ParamField body="parentFolderId" type="number">
+  ID of the parent folder. Omit or set to `null` to create a top-level folder.
+</ParamField>
+
+```bash
+curl -X POST https://api.blockchaindrive.io/api/drives/7/folders \
+  -H "Content-Type: application/json" \
+  --cookie "connect.sid=..." \
+  -d '{"name":"Invoices","parentFolderId":null}'
+```
+
+Returns the created folder object.
+
+**Errors:** `403` ACCESS_DENIED (caller lacks editor or admin role), `404` drive not found.

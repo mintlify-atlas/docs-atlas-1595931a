@@ -1,0 +1,135 @@
+---
+title: 'Share files and drives with role-based access control'
+description: 'Share files or entire drives with viewer or editor roles. Add password protection, expiry dates, and revoke bulk smart-contract shares at any time.'
+---
+
+Blockchain Drive offers two distinct sharing systems that can be used independently or together. **RBAC sharing** (via the collaboration service) is designed for ongoing, role-based access to files or drives. **Bulk smart-contract sharing** is designed for one-time, potentially password-protected, time-limited shares of multiple files at once.
+
+## File sharing (RBAC)
+
+Individual files can be shared with any registered user by username. The owner selects a role — **viewer** or **editor** — that controls what the recipient can do.
+
+| Role | Permissions |
+|------|-------------|
+| viewer | View and download the file |
+| editor | View, download, and edit the file; create expiring links |
+
+<Steps>
+  <Step title="Click Share">
+    In the file browser, click **Share** on the file you want to share. The `ShareDialog` opens.
+  </Step>
+  <Step title="Enter the recipient's username">
+    Type the recipient's username. The app looks up the user and, for encrypted files, fetches their encryption public key from `/share-target`.
+  </Step>
+  <Step title="Choose a role">
+    Select **viewer** or **editor**.
+  </Step>
+  <Step title="Approve MetaMask (encrypted files only)">
+    If the file is encrypted, your MetaMask wallet is prompted to decrypt the file's raw key. The app then re-encrypts it for the recipient's public key using `encryptForPublicKey`. This re-encrypted key is stored with the share record so the recipient can decrypt the file with their own wallet.
+  </Step>
+  <Step title="Confirm">
+    Click **Share**. The server records the share (and optionally logs it to the smart contract). The recipient can now see the file in their **Shared with me** list.
+  </Step>
+</Steps>
+
+<Note>
+  If the recipient has never connected their MetaMask wallet, they will not have a registered encryption public key. You can still share unencrypted files with them, but encrypted files cannot be re-keyed for their account until they log in with MetaMask at least once.
+</Note>
+
+### Viewing shared files
+
+Recipients browse files shared with them at `GET /shared-with-me`. These files appear in the **Shared with me** section of the sidebar.
+
+## Drive sharing
+
+Drive sharing applies the same RBAC model to every file in your personal drive at once. This is useful when you want to give a collaborator access to your entire drive in a single step.
+
+<Steps>
+  <Step title="Open the Share dialog">
+    From the drive view, click **Share** (or use the `ShareDialog`). Ensure no individual file is selected — the dialog targets the whole drive.
+  </Step>
+  <Step title="Enter the recipient's username and role">
+    The app resolves the recipient and fetches their public key from `/share-target`.
+  </Step>
+  <Step title="Key preparation">
+    The app iterates every encrypted file in your drive. For each file, it:
+    1. Checks if the raw key is already cached in memory (`getCachedFileKeyByCid`).
+    2. If not cached, prompts MetaMask to decrypt the file's `ownerEncryptedKey` (`decryptWithMetaMask`). A progress bar keeps you informed.
+    3. Re-encrypts the raw key for the recipient's public key (`encryptForPublicKey`) and adds it to the `keyShares` map.
+  </Step>
+  <Step title="Send the share">
+    The app posts `{ username, role, keyShares }` to `POST /drive/share`. The server creates a share record for each file, including the recipient's re-encrypted key. The progress bar reaches 100% and closes.
+  </Step>
+</Steps>
+
+<Warning>
+  Sharing a drive with many encrypted files may require multiple MetaMask approvals — one per uncached file key. Keep the MetaMask extension open and approve each prompt. You can skip uncached keys if you are in a hurry; those files will be shared without an encrypted key, meaning the recipient cannot decrypt them until you reshare.
+</Warning>
+
+## Bulk smart-contract sharing
+
+The bulk sharing API lets you share multiple files simultaneously via `POST /api/shares/bulk`. Shares are recorded in the database (and optionally on-chain) with optional password protection and expiry.
+
+```json
+// POST /api/shares/bulk
+{
+  "fileIds": [10, 11, 42],
+  "recipientAddress": "alice",
+  "permissionType": "readonly",
+  "sharePassword": "s3cr3t",
+  "expiresIn": 7
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `fileIds` | number[] | IDs of files to share. All must belong to you. |
+| `recipientAddress` | string | Username or wallet address of the recipient. |
+| `permissionType` | `"readonly"` \| `"readwrite"` | Access level granted. |
+| `sharePassword` | string | Optional password. Stored as a bcrypt hash. |
+| `expiresIn` | number | Days until the share expires. Omit for no expiry. |
+
+The response includes a `shareId` and `expiresAt` timestamp.
+
+### Accessing a received bulk share
+
+Recipients list all shares sent to them at `GET /api/shares/received`. To access a specific share:
+
+```
+GET /api/shares/received/:shareId?password=s3cr3t
+```
+
+The server verifies the requester is the intended recipient, checks the share has not been revoked or expired, and validates the password if one was set. On success it returns the `permissionType` and `fileIds`.
+
+### Revoking a bulk share
+
+```json
+// POST /api/shares/revoke
+{ "shareId": 7 }
+```
+
+The `revoked_at` timestamp is set on the share document. All subsequent access attempts return a `Share has been revoked` error. The revocation is permanent — there is no un-revoke operation.
+
+<Note>
+  Revocation is recorded immutably in the database. If you also configured the smart contract integration, the share status change is reflected on-chain, providing an auditable record.
+</Note>
+
+## Expiring links
+
+For quick, unauthenticated sharing of any file, generate a time-limited link. The link redirects to the file's IPFS gateway URL when visited. No account is required to follow the link.
+
+<Steps>
+  <Step title="Generate the link">
+    Call `POST /files/:id/link` with an `expiresInMinutes` value. You must be the file owner or have editor access.
+  </Step>
+  <Step title="Copy and share the URL">
+    The response contains a URL in the form `/l/<token>`. Share this URL — anyone with it can access the file until it expires.
+  </Step>
+  <Step title="Expiry">
+    After the specified number of minutes, the link returns HTTP 410 (Gone). There is no way to extend an existing link — generate a new one if needed.
+  </Step>
+</Steps>
+
+## Revoking RBAC file shares
+
+To remove a user's access to an individually shared file, use the admin panel or the API directly. Removing the share record immediately blocks the recipient's access — they will receive a 403 on their next request.

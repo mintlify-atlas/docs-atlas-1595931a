@@ -1,0 +1,195 @@
+---
+title: "Admin — User management and storage pool allocation"
+description: "Manage user accounts, assign roles and quotas, delete users, and allocate on-chain storage pools. All endpoints require an admin session cookie."
+---
+
+Admin endpoints let platform administrators manage user accounts and control storage quota allocation through the Ethereum storage contract. These endpoints are gated by a server-side role check: the session user must have the `admin` role.
+
+<Warning>
+  All endpoints in this section require an authenticated admin session cookie. Requests without a valid session return `401`. Requests from non-admin users return `403`. Never expose these endpoints publicly or include admin credentials in client-side code.
+</Warning>
+
+---
+
+## GET /api/admin/users
+
+Returns all registered users with their computed storage usage.
+
+```bash
+curl "https://api.blockchaindrive.io/api/admin/users" \
+  --cookie "connect.sid=..."
+```
+
+Returns an array of user objects:
+
+<ResponseField name="id" type="number" required>
+  Internal user ID.
+</ResponseField>
+
+<ResponseField name="username" type="string | null" required>
+  Display username, or `null` if the user has not set one.
+</ResponseField>
+
+<ResponseField name="wallet_address" type="string" required>
+  Ethereum wallet address (lowercase).
+</ResponseField>
+
+<ResponseField name="role" type="string" required>
+  Current platform role: `admin`, `uploader`, or `commenter`. Unrecognized role strings are normalized to `commenter`.
+</ResponseField>
+
+<ResponseField name="storage_used" type="number" required>
+  Total bytes consumed across all files owned by this user.
+</ResponseField>
+
+```json
+[
+  {
+    "id": 1,
+    "username": "alice_eth",
+    "wallet_address": "0xabc123...",
+    "role": "admin",
+    "storage_used": 1073741824
+  },
+  {
+    "id": 2,
+    "username": "bob_eth",
+    "wallet_address": "0xdef456...",
+    "role": "editor",
+    "storage_used": 524288000
+  }
+]
+```
+
+<Note>
+  Storage usage is computed on the fly by summing file sizes in the database. It does not reflect on-chain quota stats — use `GET /blockchain/quota` for contract-level data.
+</Note>
+
+---
+
+## POST /api/admin/users/:id/access
+
+Sets the role and storage quota for a user. Both fields are optional — supply only the ones you want to change.
+
+<ParamField path="id" type="number" required>
+  Numeric ID of the user to update.
+</ParamField>
+
+<ParamField body="role" type="string">
+  New platform role: `admin`, `uploader`, or `commenter`. Any other value is normalized to `commenter`.
+</ParamField>
+
+<ParamField body="quotaBytes" type="number">
+  New storage quota in bytes. Set to `0` to use the platform default.
+</ParamField>
+
+```bash
+curl -X POST https://api.blockchaindrive.io/api/admin/users/2/access \
+  -H "Content-Type: application/json" \
+  --cookie "connect.sid=..." \
+  -d '{"role":"editor","quotaBytes":10737418240}'
+```
+
+<ResponseField name="success" type="boolean" required>Always `true`.</ResponseField>
+<ResponseField name="user" type="object" required>The updated user record.</ResponseField>
+
+```json
+{ "success": true, "user": { "id": 2, "role": "editor", "quota_bytes": 10737418240 } }
+```
+
+**Errors:** `400` invalid user ID, `404` user not found.
+
+---
+
+## DELETE /api/admin/users/:id
+
+Permanently deletes a user account and all associated data.
+
+<ParamField path="id" type="number" required>
+  Numeric ID of the user to delete.
+</ParamField>
+
+```bash
+curl -X DELETE "https://api.blockchaindrive.io/api/admin/users/2" \
+  --cookie "connect.sid=..."
+```
+
+```json
+{ "success": true, "message": "User deleted" }
+```
+
+**Errors:** `404` user not found.
+
+<Warning>
+  User deletion is permanent and irreversible. All of the user's files, shares, and session data are removed from the database. Files pinned on IPFS are not automatically unpinned — manage IPFS pinning separately.
+</Warning>
+
+---
+
+## POST /api/admin/pool/allocate
+
+Creates or tops up a named storage pool on the Ethereum storage allocation contract. Pools group a bucket of bytes that can be distributed to users.
+
+<ParamField body="poolName" type="string" required>
+  Unique name for the storage pool (e.g. `free-tier`, `enterprise-q3`).
+</ParamField>
+
+<ParamField body="bytesAmount" type="number" required>
+  Number of bytes to allocate to the pool.
+</ParamField>
+
+```bash
+curl -X POST https://api.blockchaindrive.io/api/admin/pool/allocate \
+  -H "Content-Type: application/json" \
+  --cookie "connect.sid=..." \
+  -d '{"poolName":"free-tier","bytesAmount":107374182400}'
+```
+
+```json
+{ "success": true, "message": "Successfully allocated pool free-tier" }
+```
+
+**Errors:** `400` missing `poolName` or `bytesAmount`, `500` blockchain transaction failure.
+
+<Note>
+  Pool allocation requires `USE_REAL_CONTRACTS=true` and a funded admin signing key configured via `RPC_URL` and `STORAGE_ALLOC_CONTRACT` environment variables. In mock mode the call succeeds but does not submit a transaction.
+</Note>
+
+---
+
+## POST /api/admin/quota/allocate
+
+Assigns storage quota to a specific user wallet from an existing pool. The user's on-chain quota is updated and subsequent uploads enforce the new limit when `ENFORCE_QUOTA_ON_UPLOAD=true`.
+
+<ParamField body="poolName" type="string" required>
+  Name of the pool to draw bytes from.
+</ParamField>
+
+<ParamField body="userAddress" type="string" required>
+  Ethereum wallet address of the user receiving the quota.
+</ParamField>
+
+<ParamField body="bytesAmount" type="number" required>
+  Number of bytes to allocate from the pool to the user.
+</ParamField>
+
+```bash
+curl -X POST https://api.blockchaindrive.io/api/admin/quota/allocate \
+  -H "Content-Type: application/json" \
+  --cookie "connect.sid=..." \
+  -d '{
+    "poolName": "free-tier",
+    "userAddress": "0xdef456...",
+    "bytesAmount": 5368709120
+  }'
+```
+
+```json
+{ "success": true, "message": "Successfully allocated 5368709120 bytes to 0xdef456..." }
+```
+
+**Errors:** `400` missing required fields, `500` blockchain transaction failure.
+
+<Tip>
+  After allocating on-chain quota, call `POST /api/admin/users/:id/access` to synchronize the database-level quota so that `GET /me` reflects the correct `quotaBytes` value for the user.
+</Tip>

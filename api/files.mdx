@@ -1,0 +1,341 @@
+---
+title: "Files — Upload, download, and manage IPFS-pinned files"
+description: "Upload files to IPFS, stream content, anchor records on Ethereum, create expiring links, and comment. All endpoints require a session cookie."
+---
+
+Files are the core resource in Blockchain Drive. Each file is pinned to IPFS and receives a content identifier (CID). Optionally, the file can be anchored on Ethereum for tamper-proof provenance. Files may be encrypted client-side before upload; the encryption metadata travels alongside the CID.
+
+All file endpoints require an authenticated session. A 401 is returned when the session cookie is absent or expired.
+
+---
+
+## POST /upload
+
+Uploads a file to IPFS and records it in the database. The request must be `multipart/form-data`. Maximum file size is **500 MB**.
+
+<ParamField body="file" type="binary" required>
+  The raw file bytes. Use the field name `file`.
+</ParamField>
+
+<ParamField body="filename" type="string">
+  Override the file's display name. Defaults to the original filename from the multipart upload.
+</ParamField>
+
+<ParamField body="description" type="string">
+  Free-text description stored alongside the file record.
+</ParamField>
+
+<ParamField body="encryption" type="string">
+  JSON-encoded encryption metadata produced by the client before upload (algorithm, IV, encrypted key, etc.). See `/api/encryption/encrypt` for the shape.
+</ParamField>
+
+<ParamField body="driveId" type="number">
+  Numeric ID of a collaborative drive to associate this file with. The caller must have at least `editor` role on that drive.
+</ParamField>
+
+<ParamField body="folderId" type="number">
+  Numeric ID of a folder within the drive. Ignored when `driveId` is absent.
+</ParamField>
+
+```bash
+curl -X POST https://api.blockchaindrive.io/upload \
+  --cookie "connect.sid=..." \
+  -F "file=@report.pdf" \
+  -F "filename=Q3 Report" \
+  -F "driveId=7"
+```
+
+<ResponseField name="success" type="boolean" required>
+  Always `true` on success.
+</ResponseField>
+
+<ResponseField name="cid" type="string" required>
+  IPFS content identifier for the uploaded file.
+</ResponseField>
+
+<ResponseField name="customHash" type="string | null" required>
+  Application-level hash used for integrity verification, or `null` if not computed.
+</ResponseField>
+
+```json
+{
+  "success": true,
+  "cid": "bafybeigdyrzt5sfp7udm...",
+  "customHash": "sha256:e3b0c44298fc..."
+}
+```
+
+**Errors**
+
+| Status | Error code | Condition |
+|--------|-----------|-----------|
+| `403`  | `QUOTA_EXCEEDED` | The file would exceed the user's personal storage quota |
+| `403`  | `DRIVE_QUOTA_EXCEEDED` | The file would exceed the target drive's quota |
+| `403`  | `ROLE_FORBIDDEN` | The user's drive role does not permit uploads |
+
+---
+
+## GET /files
+
+Lists files owned by the authenticated user, or files within a specific drive or folder.
+
+<ParamField query="driveId" type="number">
+  Filter to files in this collaborative drive. The caller must have at least `viewer` role.
+</ParamField>
+
+<ParamField query="folderId" type="number">
+  Further filter to a specific folder within the drive.
+</ParamField>
+
+```bash
+curl "https://api.blockchaindrive.io/files?driveId=7" \
+  --cookie "connect.sid=..."
+```
+
+Returns an array of file objects:
+
+<ResponseField name="id" type="number" required>Unique file ID.</ResponseField>
+<ResponseField name="filename" type="string" required>Display name of the file.</ResponseField>
+<ResponseField name="cid" type="string" required>IPFS content identifier.</ResponseField>
+<ResponseField name="size_bytes" type="number" required>File size in bytes.</ResponseField>
+<ResponseField name="custom_hash" type="string | null">Application-level integrity hash.</ResponseField>
+<ResponseField name="tx_hash" type="string | null">Ethereum transaction hash if the file has been anchored on-chain.</ResponseField>
+<ResponseField name="encryption" type="object | null">Encryption metadata, or `null` for unencrypted files.</ResponseField>
+<ResponseField name="drive_id" type="number | null">Drive this file belongs to, or `null` for personal storage.</ResponseField>
+<ResponseField name="folder_id" type="number | null">Folder this file belongs to, or `null` for the drive root.</ResponseField>
+
+---
+
+## POST /delete/:id
+
+Permanently removes a file record. Only the file owner can delete.
+
+<ParamField path="id" type="number" required>
+  Numeric ID of the file to delete.
+</ParamField>
+
+```bash
+curl -X POST "https://api.blockchaindrive.io/delete/123" \
+  --cookie "connect.sid=..."
+```
+
+```json
+{ "success": true }
+```
+
+---
+
+## GET /files/:id/content
+
+Streams the raw file bytes from IPFS. The response sets `Content-Type` and `Content-Disposition: inline` headers based on the stored file name.
+
+<ParamField path="id" type="number" required>
+  Numeric ID of the file.
+</ParamField>
+
+```bash
+curl -OJ "https://api.blockchaindrive.io/files/123/content" \
+  --cookie "connect.sid=..."
+```
+
+**Errors:** `403` ACCESS_DENIED, `404` NOT_FOUND, `502` IPFS_FETCH_FAILED.
+
+---
+
+## GET /files/:id/crypto
+
+Returns the encryption metadata needed to decrypt a file client-side. The `encryptedKey` field is scoped to the caller: owners receive the owner-encrypted key; shared users receive the key that was encrypted specifically for them when the file was shared.
+
+<ParamField path="id" type="number" required>
+  Numeric ID of the file.
+</ParamField>
+
+<ResponseField name="isEncrypted" type="boolean" required>Whether the file was encrypted before upload.</ResponseField>
+<ResponseField name="algorithm" type="string | null">Encryption algorithm, e.g. `AES-256`.</ResponseField>
+<ResponseField name="iv" type="string | null">Base64-encoded initialization vector.</ResponseField>
+<ResponseField name="encryptedKey" type="string | null">The file encryption key, encrypted with the caller's public key.</ResponseField>
+<ResponseField name="cid" type="string | null">IPFS CID of the (encrypted) file bytes.</ResponseField>
+<ResponseField name="originalName" type="string">Original file name before encryption.</ResponseField>
+<ResponseField name="originalMimeType" type="string">MIME type of the plaintext file.</ResponseField>
+
+```json
+{
+  "isEncrypted": true,
+  "algorithm": "AES-256",
+  "iv": "aGVsbG8gd29ybGQ=",
+  "encryptedKey": "AAAA...base64...",
+  "cid": "bafybeigdyrzt...",
+  "originalName": "report.pdf",
+  "originalMimeType": "application/pdf"
+}
+```
+
+<Warning>
+  Returns `403` when the file is encrypted but no key exists for the requesting user. This happens if the file was shared without re-encrypting the key for the recipient.
+</Warning>
+
+---
+
+## GET /files/:id/view-url
+
+Returns a signed in-app viewer URL that can be embedded in an iframe or opened in the Blockchain Drive viewer.
+
+<ParamField path="id" type="number" required>
+  Numeric ID of the file.
+</ParamField>
+
+<ResponseField name="url" type="string" required>
+  Absolute URL to the in-app file viewer.
+</ResponseField>
+
+```json
+{ "url": "https://app.blockchaindrive.io/view/bafybei..." }
+```
+
+---
+
+## POST /files/:id/anchor
+
+Submits an Ethereum transaction to anchor the file's CID on-chain, creating a tamper-proof provenance record.
+
+<ParamField path="id" type="number" required>
+  Numeric ID of the file to anchor.
+</ParamField>
+
+```bash
+curl -X POST "https://api.blockchaindrive.io/files/123/anchor" \
+  --cookie "connect.sid=..."
+```
+
+<ResponseField name="success" type="boolean" required>Always `true`.</ResponseField>
+<ResponseField name="txHash" type="string" required>Ethereum transaction hash of the anchor transaction.</ResponseField>
+
+```json
+{ "success": true, "txHash": "0xabc123..." }
+```
+
+<Note>
+  Anchoring costs gas. The transaction is submitted from the server-side signing key configured via environment variables. The `txHash` is stored against the file record and returned in `GET /files` as `tx_hash`.
+</Note>
+
+---
+
+## POST /files/:id/link
+
+Creates a time-limited, publicly accessible link to a file. The link resolves via the IPFS gateway without requiring authentication.
+
+<ParamField path="id" type="number" required>
+  Numeric ID of the file.
+</ParamField>
+
+<ParamField body="expiresInMinutes" type="number" required>
+  Positive integer. How long the link remains valid. Defaults to `60` if omitted or `0`.
+</ParamField>
+
+<ResponseField name="url" type="string" required>The shareable link URL.</ResponseField>
+<ResponseField name="expiresAt" type="string" required>ISO 8601 timestamp when the link expires.</ResponseField>
+
+```json
+{
+  "url": "https://api.blockchaindrive.io/l/eyJh...",
+  "expiresAt": "2025-06-01T12:00:00.000Z"
+}
+```
+
+---
+
+## GET /l/:token
+
+Resolves an expiring link token and redirects to the IPFS gateway. No authentication required — this endpoint is designed for public sharing.
+
+<ParamField path="token" type="string" required>
+  The opaque token from a `POST /files/:id/link` response.
+</ParamField>
+
+| Status | Condition |
+|--------|-----------|
+| `302`  | Token valid — redirects to `{IPFS_GATEWAY_URL}/ipfs/{cid}` |
+| `404`  | Token not found |
+| `410`  | Token has expired |
+
+---
+
+## GET /files/:id/comments
+
+Lists all comments left on a file. The caller must have at least `viewer` access.
+
+<ParamField path="id" type="number" required>
+  Numeric ID of the file.
+</ParamField>
+
+Returns an array of comment objects ordered by creation time.
+
+---
+
+## POST /files/:id/comments
+
+Adds a comment to a file. The caller must have at least `viewer` access.
+
+<ParamField path="id" type="number" required>
+  Numeric ID of the file.
+</ParamField>
+
+<ParamField body="text" type="string" required>
+  Comment content. Must be non-empty.
+</ParamField>
+
+```json
+{ "success": true }
+```
+
+---
+
+## GET /me
+
+Returns profile and storage quota information for the authenticated user.
+
+<ResponseField name="id" type="number" required>Internal user ID.</ResponseField>
+<ResponseField name="username" type="string | null" required>Display username.</ResponseField>
+<ResponseField name="role" type="string" required>Account role: `admin`, `uploader`, or `commenter`.</ResponseField>
+<ResponseField name="quotaBytes" type="number" required>Total allocated storage in bytes.</ResponseField>
+<ResponseField name="usedBytes" type="number" required>Storage consumed across all files in bytes.</ResponseField>
+<ResponseField name="remainingBytes" type="number" required>Remaining quota in bytes.</ResponseField>
+
+```json
+{
+  "id": 42,
+  "username": "alice_eth",
+  "role": "editor",
+  "quotaBytes": 10737418240,
+  "usedBytes": 1073741824,
+  "remainingBytes": 9663676416
+}
+```
+
+---
+
+## GET /share-target
+
+Looks up another user by username or wallet address. Use this before sharing a file to retrieve the recipient's encryption public key.
+
+<ParamField query="identifier" type="string" required>
+  A username or Ethereum wallet address.
+</ParamField>
+
+<ResponseField name="id" type="number" required>Internal user ID of the target.</ResponseField>
+<ResponseField name="walletAddress" type="string" required>Ethereum wallet address.</ResponseField>
+<ResponseField name="encryptionPublicKey" type="string | null" required>MetaMask encryption public key, if the user has registered one.</ResponseField>
+<ResponseField name="username" type="string | null" required>Display username.</ResponseField>
+
+```json
+{
+  "id": 99,
+  "walletAddress": "0xdef789...",
+  "encryptionPublicKey": "AAAA...base64...",
+  "username": "bob_eth"
+}
+```
+
+<Tip>
+  If `encryptionPublicKey` is `null`, the recipient has not registered a key via `POST /auth/encryption-key` and cannot receive end-to-end encrypted file shares.
+</Tip>

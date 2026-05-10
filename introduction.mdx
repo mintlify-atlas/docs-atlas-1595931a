@@ -1,0 +1,50 @@
+---
+title: "Blockchain Drive: Decentralized Cloud Storage"
+description: "Blockchain Drive stores your files on IPFS and enforces access control through Ethereum smart contracts, giving you ownership without a central server."
+---
+
+Blockchain Drive is a decentralized cloud storage platform that stores files on IPFS and manages permissions through Ethereum smart contracts. Unlike traditional cloud storage, no central authority controls your data — ownership is enforced on-chain, and files are addressed by content hash rather than location.
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Connect your MetaMask wallet and upload your first file in minutes
+  </Card>
+  <Card title="Architecture" icon="sitemap" href="/architecture">
+    Understand how IPFS, smart contracts, and the backend work together
+  </Card>
+  <Card title="File Management" icon="folder-open" href="/features/file-management">
+    Upload, view, download, and organize files in your decentralized drive
+  </Card>
+  <Card title="Encryption" icon="lock" href="/features/encryption">
+    Encrypt files with AES-128 or AES-256 using your MetaMask wallet as the key manager
+  </Card>
+  <Card title="Sharing" icon="share-nodes" href="/features/sharing">
+    Share files or entire drives with granular role-based access control
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/auth">
+    Explore the full REST API for files, drives, encryption, and blockchain operations
+  </Card>
+</CardGroup>
+
+## How it works
+
+Blockchain Drive combines three technologies to deliver trustless file storage:
+
+1. **IPFS** stores your file content, addressed by its cryptographic hash (CID). Files are immutable and content-addressed — the same content always produces the same CID.
+2. **Ethereum smart contracts** record file ownership, manage storage quotas, and enforce access grants on-chain. Permissions are immutable and auditable without trusting a central server.
+3. **MetaMask wallet** is your identity. You sign in by signing a cryptographic message — no password required. If you encrypt files, MetaMask also manages the encryption key so only your wallet can decrypt them.
+
+<CardGroup cols={2}>
+  <Card title="Blockchain & IPFS" icon="link" href="/blockchain/overview">
+    Learn how on-chain permissions and IPFS content addressing work together
+  </Card>
+  <Card title="Smart Contracts" icon="file-contract" href="/blockchain/smart-contracts">
+    Explore the unified Solidity contract that handles quota and file access
+  </Card>
+  <Card title="Drives & Folders" icon="hard-drive" href="/features/drives-and-folders">
+    Organize files into collaborative drives with per-member role assignment
+  </Card>
+  <Card title="Admin Guide" icon="shield-halved" href="/deployment/admin-guide">
+    Manage users, quotas, and roles from the admin panel
+  </Card>
+</CardGroup>

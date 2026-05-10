@@ -1,0 +1,132 @@
+{
+  "projectType": "saas",
+  "projectName": "Blockchain Drive",
+  "projectDescription": "A decentralized cloud storage platform that uses IPFS for file storage and Ethereum smart contracts for on-chain access control, quota management, and file sharing.",
+  "theme": "luma",
+  "primaryColor": "#6366f1",
+  "lightColor": "#818cf8",
+  "darkColor": "#4338ca",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "architecture"
+            ]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "features/file-management",
+              "features/encryption",
+              "features/sharing",
+              "features/drives-and-folders"
+            ]
+          },
+          {
+            "group": "Blockchain & IPFS",
+            "pages": [
+              "blockchain/overview",
+              "blockchain/smart-contracts",
+              "blockchain/quota-management"
+            ]
+          },
+          {
+            "group": "Configuration & Deployment",
+            "pages": [
+              "deployment/environment-variables",
+              "deployment/setup",
+              "deployment/admin-guide"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Authentication",
+            "pages": [
+              "api/auth"
+            ]
+          },
+          {
+            "group": "Files & Drives",
+            "pages": [
+              "api/files",
+              "api/drives",
+              "api/sharing"
+            ]
+          },
+          {
+            "group": "Encryption",
+            "pages": [
+              "api/encryption"
+            ]
+          },
+          {
+            "group": "Admin",
+            "pages": [
+              "api/admin",
+              "api/blockchain"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Decentralized file storage via IPFS (Kubo daemon)",
+    "Ethereum smart contract-based access control and quota management",
+    "MetaMask wallet authentication with cryptographic signature verification",
+    "End-to-end file encryption using AES-128/AES-256 with MetaMask key management",
+    "Collaborative drives with role-based access (admin, editor, viewer, commenter)",
+    "Bulk file sharing with smart contract-stored permissions, expiry, and revocation",
+    "On-chain file anchoring for immutable audit trail",
+    "Expiring file links via token-based IPFS gateway redirects",
+    "Admin panel for user management, quota allocation, and role assignment",
+    "Next.js frontend with grid/list file browser and in-app file viewer"
+  ],
+  "publicApiSurface": [
+    "GET /auth/nonce — Get wallet authentication nonce",
+    "POST /auth/verify — Verify wallet signature and login",
+    "POST /auth/username — Set username after first login",
+    "POST /auth/logout — Logout session",
+    "POST /upload — Upload file to IPFS",
+    "GET /files — List user files",
+    "POST /delete/:id — Delete a file",
+    "GET /files/:id/content — Download file content",
+    "GET /files/:id/crypto — Get file encryption metadata",
+    "GET /files/:id/view-url — Get in-app viewer URL",
+    "POST /files/:id/anchor — Anchor file on blockchain",
+    "POST /files/:id/link — Create expiring download link",
+    "GET /l/:token — Resolve expiring link to IPFS",
+    "POST /share/:id — Share file with another user",
+    "GET /shared-with-me — List files shared with me",
+    "POST /drive/share — Share entire drive with a user",
+    "GET /api/drives/me — List my drives",
+    "POST /api/drives — Create collaborative drive",
+    "GET /api/drives/:driveId/members — List drive members",
+    "POST /api/drives/:driveId/invite — Invite user to drive",
+    "DELETE /api/drives/:driveId/members/:userId — Remove drive member",
+    "GET /api/drives/:driveId/files — List files in drive",
+    "GET /api/drives/:driveId/folders — List folders in drive",
+    "POST /api/drives/:driveId/folders — Create folder",
+    "GET /api/encryption/methods — List encryption methods",
+    "POST /api/encryption/encrypt — Encrypt a file",
+    "POST /api/encryption/decrypt — Decrypt a file",
+    "POST /api/shares/bulk — Bulk share files via smart contract",
+    "GET /api/shares/received — List received shares",
+    "POST /api/shares/revoke — Revoke a share",
+    "GET /blockchain/status — Get blockchain configuration status",
+    "GET /blockchain/quota — Get on-chain quota stats",
+    "GET /api/admin/users — List all users (admin)",
+    "POST /api/admin/quota/allocate — Allocate user quota (admin)",
+    "DELETE /api/admin/users/:id — Delete user (admin)"
+  ]
+}

@@ -1,0 +1,152 @@
+---
+title: "Blockchain Drive system architecture and data flows"
+description: "Explore the three-tier design connecting Next.js, Express, IPFS, MongoDB, and Ethereum. Learn how auth, uploads, access control, and encryption work together."
+---
+
+Blockchain Drive is built around three tiers: a Next.js frontend, an Express.js backend API, and a set of storage and consensus services — IPFS Kubo, MongoDB, and an Ethereum network. Each tier has a clear responsibility, and the backend acts as the trust boundary between the browser and the decentralized infrastructure.
+
+<CardGroup cols={2}>
+  <Card title="Next.js frontend" icon="browser" href="/quickstart">
+    Runs on port 3000. Proxies `/auth`, `/files`, `/upload`, and other API paths to the Express backend so session cookies work without cross-origin issues. Built with React 19, Tailwind CSS, and Radix UI components.
+  </Card>
+  <Card title="Express.js backend API" icon="server">
+    Runs on port 5000. Handles authentication, file uploads, sharing, encryption key management, and blockchain interactions. Exposes REST routes for auth, drive, admin, blockchain, activity, encryption, and sharing.
+  </Card>
+  <Card title="IPFS Kubo daemon" icon="network-wired">
+    Runs separately on port 5002. The backend connects to Kubo's HTTP API (`/api/v0`) via `ipfs-http-client`. Files uploaded to IPFS are addressed by content identifier (CID) — the same content always produces the same CID.
+  </Card>
+  <Card title="MongoDB" icon="database">
+    Stores all metadata: users, files, drives, folders, file shares, bulk shares, comments, expiring links, and activity logs. Connects via `MONGO_URI` (default `mongodb://127.0.0.1:27017`). Collections are indexed on startup via `ensureDbIndexes()`.
+  </Card>
+  <Card title="Ethereum network" icon="link">
+    Hosts the `BlockchainDriveUnified` smart contract. The backend uses `ethers.js` v6 with an `ADMIN_PRIVATE_KEY` wallet to call contract functions for quota management, file recording, access grants, and revocations.
+  </Card>
+  <Card title="MetaMask wallet" icon="shield-halved">
+    Serves as the user's identity and encryption key manager. Authentication uses off-chain message signing. Encrypted file uploads derive encryption keys from the wallet, so only the owner can decrypt.
+  </Card>
+</CardGroup>
+
+## Authentication flow
+
+Authentication is passwordless. The user's MetaMask wallet signs a one-time nonce, and the backend verifies the signature cryptographically — no password is stored.
+
+1. The browser calls `GET /auth/nonce?address=<wallet>`. The backend generates a random 16-byte hex nonce, stores it against the user record in MongoDB, and returns it.
+2. The browser passes the nonce string to MetaMask, which signs it as a personal message (off-chain — no gas cost).
+3. The browser posts `{ address, signature }` to `POST /auth/verify`.
+4. The backend calls `ethers.verifyMessage(nonce, signature)` to recover the signer's address. If it matches the claimed address, the session is established.
+5. An HTTP-only session cookie (`maxAge: 24h`, `sameSite: lax`) is written. All subsequent requests are authenticated by this cookie.
+6. On first login, if the authenticated wallet matches the `MAIN_ADMIN_WALLET` environment variable, the backend automatically grants that user the admin role.
+
+```javascript Authentication verification (authRoutes.js)
+const recoveredAddress = ethers.verifyMessage(expectedNonce, signature);
+
+if (recoveredAddress.toLowerCase() === normalizedAddress) {
+  req.session.userId = user.id;
+  // ...persist session, clear nonce, bootstrap default drive
+}
+```
+
+## File upload flow
+
+When a user uploads a file, the backend orchestrates four operations: receiving the file, storing it on IPFS, persisting metadata in MongoDB, and optionally anchoring a record on-chain.
+
+1. The browser submits a multipart form upload to the Express backend (handled by `multer`).
+2. If encryption is enabled, the file buffer is encrypted with AES on the client before sending; the backend receives the ciphertext.
+3. The backend calls `ipfs.add(buffer)` via `ipfs-http-client`, which sends the data to the Kubo daemon at `IPFS_API_URL`. Kubo returns a CID.
+4. The backend generates a custom hash from the file content and stores a file record in the MongoDB `files` collection, referencing the CID, custom hash, owner, drive, and optional encryption metadata.
+5. The blockchain service calls `updateQuotaAndRecordFile(userAddress, fileId, customHash, sizeBytes)`. In real mode this submits two on-chain transactions — one to update the quota and one to record the file. In mock mode it writes the metadata as hex calldata in a zero-value transaction.
+
+```javascript IPFS upload (ipfsService.js)
+const { cid } = await ipfs.add(buffer);
+return cid.toString();
+```
+
+<Note>
+  If `ENFORCE_QUOTA_ON_UPLOAD=false` (the default), upload proceeds even if the on-chain quota check fails. This keeps prototyping working before a contract is deployed. Set it to `true` once your contract is live and quotas are allocated.
+</Note>
+
+## Access control
+
+Access control uses a hybrid model: MongoDB RBAC for fast, queryable permission checks, and Ethereum smart contract grants for immutable, auditable on-chain enforcement. The `ENFORCE_CONTRACT_PERMISSIONS` variable controls whether contract failures block access or fall back to DB-only RBAC.
+
+### Database RBAC
+
+File shares are stored in the MongoDB `file_shares` collection with four roles:
+
+| Role | Permissions |
+|---|---|
+| `admin` | Full access including deletion and re-sharing |
+| `editor` | View and edit file content |
+| `viewer` | View and download only |
+| `commenter` | View and add comments |
+
+Drive membership is stored separately in `drive_members`, allowing per-drive role assignment independent of individual file shares.
+
+### Smart contract permissions
+
+The `BlockchainDriveUnified` contract's `canUserAccessFile` function checks on-chain `AccessGrant` records. The contract recognizes two on-chain roles — `viewer` and `editor` — and checks expiry timestamps:
+
+```solidity canUserAccessFile (BlockchainDriveUnified.sol)
+function canUserAccessFile(address userAddress, string memory fileId, string memory action)
+    external view returns (bool)
+{
+    // owner/uploader can do all actions
+    if (f.uploader == userAddress) return true;
+
+    AccessGrant memory grant = accessByFileAndUser[key][userAddress];
+    if (!grant.active) return false;
+    if (grant.expiresAt != 0 && grant.expiresAt < block.timestamp) return false;
+    // ...role-based action check
+}
+```
+
+When `ENFORCE_CONTRACT_PERMISSIONS=false`, the backend falls back to DB RBAC if the contract check fails or is unavailable — useful during development before the contract is deployed. When set to `true`, a failed contract check blocks access regardless of DB state.
+
+## Encryption
+
+Encryption is client-side and MetaMask-managed. The browser encrypts the file with AES before the bytes leave the user's machine.
+
+- The encryption key is derived from the user's MetaMask wallet, so only the wallet owner can decrypt.
+- The owner's encrypted AES key is stored alongside the file metadata, allowing the backend to store re-encrypted copies for recipients when sharing an encrypted file.
+- The backend can also persist encrypted key payloads as on-chain transaction calldata via `storeEncryptedKey(fileId, recipientAddress, encryptedKeyPayload)` — this works in both mock and real contract modes without ABI changes.
+
+<Warning>
+  If you lose access to your MetaMask wallet, encrypted files cannot be recovered. There is no password reset for encryption keys — the wallet is the only key.
+</Warning>
+
+## Smart contract
+
+The project ships a single Solidity contract, `BlockchainDriveUnified`, compiled for Solidity `^0.8.20`. It combines the full ABI of both `STORAGE_ALLOC_CONTRACT` and `DRIVE_V2_CONTRACT`, so you can deploy one contract in Remix and point both environment variables at the same address.
+
+**Quota section** (`STORAGE_ALLOC_CONTRACT` ABI):
+
+| Function | Description |
+|---|---|
+| `allocatePool(poolName, bytesAmount)` | Admin: create a named storage pool |
+| `allocateUserQuota(poolName, userAddress, bytesAmount)` | Admin: assign quota to a user |
+| `getQuotaStats(userAddress)` | Read tier, used bytes, remaining bytes, file count |
+| `updateQuotaAfterUpload(userAddress, fileSizeBytes)` | Increment used bytes after upload |
+| `refundQuota(userAddress, fileSizeBytes)` | Decrement used bytes after deletion |
+
+**File access section** (`DRIVE_V2_CONTRACT` ABI):
+
+| Function | Description |
+|---|---|
+| `recordFile(userAddress, fileId, customHash, sizeBytes)` | Register a file on-chain |
+| `shareFile(fileId, recipientAddress, role, expiryDays)` | Grant timed or permanent access |
+| `revokeAccess(fileId, userAddress)` | Deactivate an access grant |
+| `canUserAccessFile(userAddress, fileId, action)` | Check `view` or `edit` permission |
+
+<Tip>
+  During development, set `USE_REAL_CONTRACTS=false`. The backend will still send real transactions (embedding metadata as hex calldata) so your local blockchain forms blocks, but it will not call the contract functions and will not revert if no contract is deployed. Switch to `true` once you have deployed `BlockchainDriveUnified` and updated both contract address variables.
+</Tip>
+
+## Port reference
+
+| Service | Default port | Variable |
+|---|---|---|
+| Next.js frontend | 3000 | — |
+| Express backend API | 5000 | `PORT` |
+| IPFS Kubo daemon API | 5002 | `IPFS_API_URL` |
+| IPFS Kubo gateway | 5002 | `IPFS_GATEWAY_URL` |
+| MongoDB | 27017 | `MONGO_URI` (default `mongodb://127.0.0.1:27017`) |

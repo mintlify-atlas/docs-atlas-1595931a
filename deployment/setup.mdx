@@ -1,0 +1,140 @@
+---
+title: 'Production deployment setup for Blockchain Drive'
+description: 'Deploy Blockchain Drive to production: deploy the smart contract, configure environment variables, and start the Express backend and Next.js frontend.'
+---
+
+This guide walks through deploying Blockchain Drive to a production environment. It assumes you have already verified the app works locally in development (mock mode). The key differences in production are: real smart contracts are deployed to a live network, `USE_REAL_CONTRACTS=true` is set, and both the backend and frontend are built for production use.
+
+## System requirements
+
+Before you begin, make sure the following are available on your server or infrastructure:
+
+<CardGroup cols={2}>
+  <Card title="Node.js 18+" icon="node">
+    The Express API and Next.js frontend both require Node.js 18 or later. Run `node --version` to check.
+  </Card>
+  <Card title="IPFS Kubo daemon" icon="cloud">
+    A running Kubo node reachable at a stable address. The backend proxies all file operations through it.
+  </Card>
+  <Card title="MongoDB" icon="database">
+    A running MongoDB instance. The backend connects via `MONGO_URI` (default: `mongodb://127.0.0.1:27017`) and uses the database specified by `MONGO_DB_NAME` or `DB_NAME` (default: `ipfs_app`).
+  </Card>
+  <Card title="Ethereum RPC endpoint" icon="link">
+    A JSON-RPC endpoint for your target network — Polygon Mumbai, mainnet via Infura or Alchemy, or a self-hosted node.
+  </Card>
+</CardGroup>
+
+## Deploy the smart contracts
+
+<Steps>
+  <Step title="Install dependencies">
+    Install project dependencies in the backend directory before running the deployment script.
+
+    ```bash
+    npm install
+    ```
+  </Step>
+  <Step title="Run the deployment script">
+    Deploy both contracts to your chosen network using Hardhat. Replace `<network>` with the network name defined in your `hardhat.config.js` (for example, `mumbai`, `mainnet`, or `localhost`).
+
+    ```bash
+    npx hardhat run scripts/deploy.js --network <network>
+    ```
+
+    The script prints the deployed contract addresses to stdout. Save these — you will need them in the next step.
+  </Step>
+  <Step title="Set contract addresses in .env">
+    Update your `.env` file with the addresses printed by the deployment script.
+
+    ```bash
+    STORAGE_ALLOC_CONTRACT=0xYourDeployedStorageAllocAddress
+    DRIVE_V2_CONTRACT=0xYourDeployedDriveV2Address
+    ```
+  </Step>
+</Steps>
+
+## Configure environment variables
+
+With the contracts deployed, update the remaining production-critical variables in your `.env` file.
+
+<Steps>
+  <Step title="Enable real contract mode">
+    Set `USE_REAL_CONTRACTS` to `true`. When this is `false` (the development default), all contract calls are mocked and the addresses above are ignored.
+
+    ```bash
+    USE_REAL_CONTRACTS=true
+    ```
+  </Step>
+  <Step title="Set the RPC URL and admin private key">
+    Point the backend at your Ethereum RPC endpoint and supply the private key of the wallet that will sign on-chain transactions.
+
+    ```bash
+    RPC_URL=https://your-rpc-endpoint.example.com
+    ADMIN_PRIVATE_KEY=your_admin_wallet_private_key
+    ```
+
+    <Warning>
+    `ADMIN_PRIVATE_KEY` must never be committed to source control. Store it using a secrets manager or inject it via environment variables in your hosting platform. Add `.env` to `.gitignore` if it is not already there.
+    </Warning>
+  </Step>
+  <Step title="Set the main admin wallet">
+    Set `MAIN_ADMIN_WALLET` to the Ethereum address that should receive admin rights on its first login. This is typically the address corresponding to `ADMIN_PRIVATE_KEY`, but it can be any wallet address.
+
+    ```bash
+    MAIN_ADMIN_WALLET=0xYourAdminWalletAddress
+    ```
+  </Step>
+  <Step title="Set remaining server variables">
+    Configure the session secret, Node environment, database credentials, and IPFS URLs. See the [environment variables reference](/deployment/environment-variables) for the full list.
+
+    ```bash
+    NODE_ENV=production
+    SESSION_SECRET=a-long-random-secret-string
+    MONGO_URI=mongodb://your-mongo-host:27017
+    MONGO_DB_NAME=ipfs_app
+    IPFS_API_URL=http://127.0.0.1:5002/api/v0
+    IPFS_GATEWAY_URL=http://127.0.0.1:5002
+    BACKEND_URL=https://api.yourdomain.com
+    ```
+  </Step>
+</Steps>
+
+## Start the backend
+
+The `start` script in `package.json` runs `node server.js` directly.
+
+```bash
+npm start
+```
+
+On startup the server prints the API URL, the IPFS endpoint it is connected to, the Node environment, and whether it is in real or mock contract mode. Verify these values match your configuration before continuing.
+
+<Note>
+In production, run the backend under a process manager such as PM2 or systemd so it restarts automatically on failure. Example with PM2: `pm2 start server.js --name blockchain-drive-api`.
+</Note>
+
+## Start the frontend
+
+The Next.js frontend lives in the `front end` subdirectory (note the space in the name).
+
+```bash
+cd "front end" && npm run build && npm start
+```
+
+`npm run build` compiles the Next.js application. `npm start` serves it on port 3000 by default. Place a reverse proxy (Nginx, Caddy, or a load balancer) in front of both services if you need custom ports or TLS termination.
+
+## Verify the deployment
+
+Once both processes are running, confirm the backend is healthy by calling the `/health` endpoint:
+
+```bash
+curl https://api.yourdomain.com/health
+```
+
+A healthy backend returns:
+
+```json
+{ "ok": true, "database": "connected" }
+```
+
+If the database connection fails, the endpoint returns HTTP 503 with `"database": "error"` and an error message. Check your `DB_*` environment variables and confirm the database server is reachable from the backend host.

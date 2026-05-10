@@ -1,0 +1,222 @@
+---
+title: "Encryption — Client-side AES file encryption utilities"
+description: "Encrypt files with AES-128 or AES-256 before uploading to IPFS. Includes password validation, method comparison, and time-estimation endpoints."
+---
+
+Blockchain Drive supports client-side encryption so that file contents are never readable on the server or on IPFS without the correct password. The encryption API exposes the same algorithms used by the upload UI, allowing programmatic workflows that need to encrypt or decrypt files independently.
+
+<Note>
+  Most users encrypt files through the upload UI, which calls these endpoints automatically. You only need to call them directly if you are building a custom integration or performing bulk operations outside the browser client.
+</Note>
+
+All encryption endpoints are served under the `/api/encryption` prefix. They do **not** require authentication — but they are stateless utilities; encrypting a file here does not upload it to IPFS.
+
+---
+
+## GET /api/encryption/methods
+
+Returns the list of encryption algorithms supported by the platform.
+
+```bash
+curl https://api.blockchaindrive.io/api/encryption/methods
+```
+
+Returns an array of method objects:
+
+<ResponseField name="name" type="string" required>
+  Algorithm identifier: `AES-128` or `AES-256`.
+</ResponseField>
+
+<ResponseField name="keyBits" type="number" required>
+  Effective key length in bits. Both methods use a 32-byte (256-bit) derived key internally; the value reflects the security tier (`256` for both).
+</ResponseField>
+
+<ResponseField name="kdfIterations" type="number" required>
+  PBKDF2-SHA256 iteration count for key derivation. `10000` for AES-128, `100000` for AES-256.
+</ResponseField>
+
+<ResponseField name="estimatedSpeedMBps" type="number" required>
+  Estimated throughput in MB/s on reference hardware. `80` for AES-128, `45` for AES-256.
+</ResponseField>
+
+```json
+[
+  { "name": "AES-128", "keyBits": 256, "kdfIterations": 10000, "estimatedSpeedMBps": 80 },
+  { "name": "AES-256", "keyBits": 256, "kdfIterations": 100000, "estimatedSpeedMBps": 45 }
+]
+```
+
+---
+
+## POST /api/encryption/validate-password
+
+Checks whether a password meets the platform's strength requirements and returns a detailed breakdown.
+
+<ParamField body="password" type="string" required>
+  The candidate password to evaluate.
+</ParamField>
+
+```bash
+curl -X POST https://api.blockchaindrive.io/api/encryption/validate-password \
+  -H "Content-Type: application/json" \
+  -d '{"password":"Hunter2!"}'
+```
+
+<ResponseField name="valid" type="boolean" required>
+  `true` when 4 or more of the 5 checks pass.
+</ResponseField>
+
+<ResponseField name="score" type="number" required>
+  Number of checks passed, from `0` to `5`.
+</ResponseField>
+
+<ResponseField name="checks" type="object" required>
+  Per-check pass/fail flags: `minLength` (≥ 12 chars), `uppercase`, `lowercase`, `number`, `special`.
+</ResponseField>
+
+```json
+{
+  "valid": true,
+  "score": 5,
+  "checks": {
+    "minLength": true,
+    "uppercase": true,
+    "lowercase": true,
+    "number": true,
+    "special": true
+  }
+}
+```
+
+---
+
+## POST /api/encryption/encrypt
+
+Encrypts a file buffer with the chosen algorithm and returns the ciphertext and metadata needed to decrypt later. The request must be `multipart/form-data`.
+
+<ParamField body="file" type="binary" required>
+  The raw file to encrypt. Use the multipart field name `file`.
+</ParamField>
+
+<ParamField body="password" type="string" required>
+  Encryption password. The key is derived via PBKDF2 using the iteration count for the selected method.
+</ParamField>
+
+<ParamField body="method" type="string">
+  Algorithm to use. One of `AES-128` or `AES-256`. Defaults to `AES-256`.
+</ParamField>
+
+```bash
+curl -X POST https://api.blockchaindrive.io/api/encryption/encrypt \
+  -F "file=@report.pdf" \
+  -F "password=MyP@ss!" \
+  -F "method=AES-256"
+```
+
+Returns the encryption result including the ciphertext (as base64 or binary), the IV, the derived-key salt, and the algorithm name. Pass the full response as the `encryption` field body when calling `POST /upload`.
+
+<ResponseField name="fileName" type="string" required>Original file name, preserved for display after decryption.</ResponseField>
+<ResponseField name="originalSizeBytes" type="number" required>Plaintext size in bytes.</ResponseField>
+
+**Errors:** `400` file or password missing, `400` unknown method (`INVALID_METHOD`), `500` encryption failure.
+
+<Tip>
+  Prefer `AES-256` for sensitive documents. Use `AES-128` only when encrypting large files in latency-sensitive workflows — see `GET /api/encryption/estimate-time` to compare.
+</Tip>
+
+---
+
+## POST /api/encryption/decrypt
+
+Decrypts a previously encrypted payload and returns the plaintext as a base64-encoded string.
+
+<ParamField body="password" type="string" required>
+  The same password used during encryption.
+</ParamField>
+
+The remaining body fields are the encryption payload returned by `POST /api/encryption/encrypt` (algorithm, IV, salt, ciphertext, etc.).
+
+```bash
+curl -X POST https://api.blockchaindrive.io/api/encryption/decrypt \
+  -H "Content-Type: application/json" \
+  -d '{
+    "password": "MyP@ss!",
+    "algorithm": "AES-256",
+    "iv": "aGVsbG8gd29ybGQ=",
+    "salt": "abc123...",
+    "ciphertext": "ZZZZ...base64..."
+  }'
+```
+
+<ResponseField name="plainTextBase64" type="string" required>
+  Base64-encoded plaintext bytes. Decode and save to restore the original file.
+</ResponseField>
+
+<ResponseField name="sizeBytes" type="number" required>
+  Size of the recovered plaintext in bytes.
+</ResponseField>
+
+**Errors:** `400` wrong password or corrupted ciphertext (`DECRYPT_FAILED`), `400` unknown method (`INVALID_METHOD`).
+
+---
+
+## GET /api/encryption/estimate-time
+
+Estimates how long encryption or decryption will take for a file of a given size.
+
+<ParamField query="bytes" type="number" required>
+  File size in bytes to estimate for.
+</ParamField>
+
+<ParamField query="method" type="string">
+  Algorithm: `AES-128` or `AES-256`. Defaults to `AES-256`.
+</ParamField>
+
+```bash
+curl "https://api.blockchaindrive.io/api/encryption/estimate-time?bytes=104857600&method=AES-256"
+```
+
+<ResponseField name="method" type="string" required>
+  The resolved algorithm name (e.g. `AES-256`).
+</ResponseField>
+
+<ResponseField name="fileSizeBytes" type="number" required>
+  The file size used for the estimate (echoes the `bytes` query param).
+</ResponseField>
+
+<ResponseField name="estimatedMs" type="number" required>
+  Estimated processing time in milliseconds.
+</ResponseField>
+
+```json
+{
+  "method": "AES-256",
+  "fileSizeBytes": 104857600,
+  "estimatedMs": 2222
+}
+```
+
+---
+
+## POST /api/encryption/compare-methods
+
+Compares estimated performance of AES-128 vs AES-256 for a given file size.
+
+<ParamField body="bytes" type="number" required>
+  File size in bytes to use for the comparison.
+</ParamField>
+
+```bash
+curl -X POST https://api.blockchaindrive.io/api/encryption/compare-methods \
+  -H "Content-Type: application/json" \
+  -d '{"bytes":52428800}'
+```
+
+Returns an array of two estimate objects, one per method. Each object has the same shape as `GET /api/encryption/estimate-time`.
+
+```json
+[
+  { "method": "AES-128", "fileSizeBytes": 52428800, "estimatedMs": 625 },
+  { "method": "AES-256", "fileSizeBytes": 52428800, "estimatedMs": 1120 }
+]
+```

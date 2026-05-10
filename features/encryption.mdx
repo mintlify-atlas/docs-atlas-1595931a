@@ -1,0 +1,119 @@
+---
+title: 'Client-side file encryption in Blockchain Drive'
+description: 'Encrypt files in your browser before upload using AES-GCM. Your MetaMask wallet manages the key — the server never sees your plaintext data.'
+---
+
+Blockchain Drive encrypts files in your browser before they are sent to the server. The encryption key is itself encrypted with your MetaMask wallet's public key and stored alongside the file metadata. The server stores only ciphertext — it cannot read your files without your wallet's approval.
+
+## How encryption works
+
+When you choose to encrypt a file, the following happens entirely in your browser:
+
+1. A random 16-byte salt and a random 12-byte IV (initialization vector) are generated.
+2. Your password (or a key derived from your MetaMask wallet) is passed through **PBKDF2** with SHA-256 to produce the encryption key.
+3. The file is encrypted using **ChaCha20-Poly1305** (an authenticated stream cipher), producing ciphertext and an authentication tag.
+4. A keyed **BLAKE2b** tag is computed over the nonce, ciphertext, and cipher auth tag to provide an additional integrity check.
+5. The raw encryption key is encrypted with your wallet's public key using `encryptForPublicKey` from `lib/file-crypto` and stored as `ownerEncryptedKey` in the file metadata.
+
+The server receives only the encrypted blob, the IV, the salt, and the wrapped key. Your plaintext data never leaves your browser.
+
+## Encryption methods
+
+Two methods are available. Both use the same underlying cipher (ChaCha20-Poly1305) and key size (256-bit), but differ in PBKDF2 iteration count, which controls how long key derivation takes and therefore how resistant the key is to brute-force attacks.
+
+| Method | PBKDF2 iterations | Estimated speed | Best for |
+|--------|-------------------|-----------------|----------|
+| AES-128 | 10,000 | ~80 MB/s | Large files, frequent access |
+| AES-256 | 100,000 | ~45 MB/s | Sensitive files, infrequent access |
+
+<Note>
+  Despite the names "AES-128" and "AES-256", both methods use a 32-byte (256-bit) key with ChaCha20-Poly1305. The names reflect the security tier, not the cipher key size.
+</Note>
+
+<Tip>
+  Use **AES-256** for documents, contracts, or any file with long-term sensitivity. Use **AES-128** for large media files where upload speed matters more than maximum key-derivation cost.
+</Tip>
+
+## Security parameters
+
+<AccordionGroup>
+  <Accordion title="Random salt — 16 bytes">
+    A fresh 16-byte random salt is generated for each encryption operation using `crypto.randomBytes(16)`. This ensures that two encryptions of the same file with the same password produce different keys and ciphertexts.
+  </Accordion>
+  <Accordion title="Random IV — 12 bytes">
+    The IV (nonce) for ChaCha20-Poly1305 is 12 bytes, generated with `crypto.randomBytes(12)`. It is stored in the file metadata and used during decryption.
+  </Accordion>
+  <Accordion title="Authenticated encryption">
+    ChaCha20-Poly1305 is an AEAD (Authenticated Encryption with Additional Data) cipher. The 16-byte Poly1305 authentication tag ensures that any tampering with the ciphertext is detected before decryption proceeds.
+  </Accordion>
+  <Accordion title="Keyed BLAKE2b integrity tag">
+    A 256-bit BLAKE2b tag is computed over the nonce, ciphertext, and Poly1305 auth tag using the derived key. Decryption fails immediately if this tag does not match, before the cipher auth tag is even checked.
+  </Accordion>
+  <Accordion title="PBKDF2 key derivation">
+    Keys are derived from passwords using PBKDF2-SHA256. AES-128 uses 10,000 iterations; AES-256 uses 100,000 iterations. The iteration count makes dictionary attacks significantly more expensive.
+  </Accordion>
+</AccordionGroup>
+
+## Uploading an encrypted file
+
+<Steps>
+  <Step title="Open the upload dialog">
+    Click **Upload** in the action bar.
+  </Step>
+  <Step title="Enable encryption">
+    Toggle the **Encrypt** switch in the upload form.
+  </Step>
+  <Step title="Choose a method">
+    Select **AES-128** or **AES-256** from the method dropdown. You can also request a time estimate from the server before committing.
+  </Step>
+  <Step title="Enter a password or use your wallet key">
+    Enter a strong password, or choose the MetaMask option to derive the key from your connected wallet account. The app calls `encryptForPublicKey` to wrap the raw key under your wallet's public key.
+  </Step>
+  <Step title="Upload">
+    Click **Upload**. The browser encrypts the file, sends the ciphertext and metadata to the server, which pins the ciphertext to IPFS. The wrapped key (`ownerEncryptedKey`) is stored in the file's encryption metadata — not the raw key.
+  </Step>
+</Steps>
+
+## Downloading an encrypted file
+
+<Steps>
+  <Step title="Click Download">
+    Click **Download** on an encrypted file (indicated by a lock icon).
+  </Step>
+  <Step title="App fetches crypto metadata">
+    The app calls `GET /files/:id/crypto`, which returns the algorithm, IV, and the version of the encrypted key appropriate for the requester — the owner's wrapped key, or a re-encrypted key if the file was shared with you.
+  </Step>
+  <Step title="MetaMask decrypts the key">
+    The app calls `decryptWithMetaMask` (from `lib/file-crypto`), which prompts your wallet to decrypt the wrapped key using your private key. You must approve this in the MetaMask extension.
+  </Step>
+  <Step title="Browser decrypts the file">
+    With the raw key recovered, the app decrypts the ciphertext blob in-browser using `decryptBlobWithWallet`. The result is saved to disk with the original filename and MIME type from the encryption metadata.
+  </Step>
+</Steps>
+
+<Warning>
+  Your MetaMask wallet must be connected and unlocked to download an encrypted file. The wallet approval step cannot be automated or skipped.
+</Warning>
+
+## Crypto metadata endpoint
+
+The `/files/:id/crypto` endpoint returns everything needed to decrypt a file. Recipients of shared encrypted files receive their own `encryptedKey` (re-encrypted for their public key); owners receive the `ownerEncryptedKey`.
+
+```json
+// GET /files/42/crypto — example response
+{
+  "isEncrypted": true,
+  "algorithm": "chacha20-poly1305",
+  "iv": "<base64-encoded 12-byte nonce>",
+  "encryptedKey": "<base64-encoded wrapped key for the requester>",
+  "cid": "QmXyz...",
+  "originalName": "contract.pdf",
+  "originalMimeType": "application/pdf"
+}
+```
+
+## Sharing encrypted files
+
+When you share an encrypted file or drive, the app must re-encrypt the file's raw key for the recipient's public key so they can decrypt it with their own wallet. See [Sharing](/features/sharing) for the full workflow.
+
+The re-encryption process uses `encryptForPublicKey(recipientPublicKey, rawKey)` from `lib/file-crypto`. The recipient's public key is fetched from `/share-target?identifier=<username>`. If the recipient has never logged in with MetaMask, they will not have a public key registered and the share cannot include encrypted file access.

@@ -1,0 +1,252 @@
+---
+title: 'Managing on-chain storage quota per wallet address'
+description: 'How Blockchain Drive tracks per-wallet storage quota on Ethereum, enforces byte limits during uploads, and refunds quota when files are deleted.'
+---
+
+Every wallet address that uses Blockchain Drive has a storage quota recorded directly on the `BlockchainDriveUnified` smart contract. The contract is the single authoritative source for how many bytes a wallet is allowed to use, how many it has consumed, and whether an upload should be permitted. The Express backend reads and writes this state through the `STORAGE_ALLOC_CONTRACT` ABI, coordinating with a separate drive-level quota stored in the database so that both layers can independently block an upload when a limit is reached.
+
+## The UserQuota struct
+
+Each wallet's quota state is stored in a `UserQuota` struct in the `quotas` mapping on the contract:
+
+```solidity contracts/BlockchainDriveUnified.sol
+struct UserQuota {
+    string tier;
+    uint256 quotaLimitBytes;
+    uint256 usedBytes;
+    uint8 usagePercent;
+    uint256 filesUploaded;
+    uint256 maxFiles;
+    bool isActive;
+    uint256 lastUpdated;
+}
+
+mapping(address => UserQuota) public quotas;
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `tier` | `string` | Label for the quota plan. Set to `"CUSTOM"` by `allocateUserQuota`. |
+| `quotaLimitBytes` | `uint256` | Maximum bytes the wallet may store. |
+| `usedBytes` | `uint256` | Bytes currently consumed across all uploaded files. |
+| `usagePercent` | `uint8` | `(usedBytes * 100) / quotaLimitBytes`, recalculated on every mutation. |
+| `filesUploaded` | `uint256` | Running count of files uploaded by this wallet. |
+| `maxFiles` | `uint256` | Maximum number of files allowed. Set to `type(uint256).max` on first allocation if not already set. |
+| `isActive` | `bool` | Must be `true` for `updateQuotaAfterUpload` to succeed. |
+| `lastUpdated` | `uint256` | Block timestamp of the last quota mutation. |
+
+<Note>
+  A wallet with no allocated quota has `isActive = false`. Uploading with `ENFORCE_QUOTA_ON_UPLOAD=true` will fail for these wallets because `updateQuotaAfterUpload` reverts when the quota is not active.
+</Note>
+
+## Quota lifecycle
+
+Quota moves through three transitions during normal use:
+
+<Steps>
+  <Step title="Admin allocates quota">
+    An admin calls `POST /api/admin/quota/allocate` with a `poolName`, `userAddress`, and `bytesAmount`. The backend signs and submits an `allocateUserQuota` transaction to the contract using `ADMIN_PRIVATE_KEY`. The contract sets `tier = "CUSTOM"`, `quotaLimitBytes = bytesAmount`, and `isActive = true`, then emits `UserQuotaAllocated(poolName, userAddress, bytesAmount)`.
+
+    ```javascript
+    // POST /api/admin/quota/allocate
+    {
+      "poolName": "standard-plan",
+      "userAddress": "0xYourWalletAddress",
+      "bytesAmount": 5368709120
+    }
+    ```
+
+    <Tip>
+      `bytesAmount` is denominated in bytes. For example, `5368709120` is exactly 5 GiB. The contract stores the raw value — no conversion is applied.
+    </Tip>
+  </Step>
+  <Step title="Upload calls updateQuotaAfterUpload">
+    After a file is successfully pinned to IPFS, the backend calls `updateQuotaAfterUpload(walletAddress, fileSizeBytes)` on the contract. The contract reverts if `isActive` is `false` or if `usedBytes + fileSizeBytes` would exceed `quotaLimitBytes`. On success it increments `usedBytes` and `filesUploaded`, recalculates `usagePercent`, updates `lastUpdated`, and emits `QuotaUpdated(userAddress, usedBytes, quotaLimitBytes)`.
+
+    ```solidity contracts/BlockchainDriveUnified.sol
+    function updateQuotaAfterUpload(address userAddress, uint256 fileSizeBytes) external {
+        UserQuota storage q = quotas[userAddress];
+        require(q.isActive, "Quota not active");
+        require(q.usedBytes + fileSizeBytes <= q.quotaLimitBytes, "Quota exceeded");
+
+        q.usedBytes += fileSizeBytes;
+        q.filesUploaded += 1;
+        q.usagePercent = q.quotaLimitBytes == 0
+            ? 0
+            : uint8((q.usedBytes * 100) / q.quotaLimitBytes);
+        q.lastUpdated = block.timestamp;
+
+        emit QuotaUpdated(userAddress, q.usedBytes, q.quotaLimitBytes);
+    }
+    ```
+  </Step>
+  <Step title="Delete calls refundQuota">
+    When a file is deleted, the backend calls `refundQuota(walletAddress, fileSizeBytes)`. Unlike `updateQuotaAfterUpload`, this function does not revert on underflow — if the refund would make `usedBytes` negative, it clamps to zero. `filesUploaded` is decremented by one (clamped at zero) and `usagePercent` is recalculated. The function emits `QuotaRefunded(userAddress, refundedBytes)`.
+
+    ```solidity contracts/BlockchainDriveUnified.sol
+    function refundQuota(address userAddress, uint256 fileSizeBytes) external {
+        UserQuota storage q = quotas[userAddress];
+        if (fileSizeBytes >= q.usedBytes) {
+            q.usedBytes = 0;
+        } else {
+            q.usedBytes -= fileSizeBytes;
+        }
+        if (q.filesUploaded > 0) {
+            q.filesUploaded -= 1;
+        }
+        q.usagePercent = q.quotaLimitBytes == 0
+            ? 0
+            : uint8((q.usedBytes * 100) / q.quotaLimitBytes);
+        q.lastUpdated = block.timestamp;
+
+        emit QuotaRefunded(userAddress, fileSizeBytes);
+    }
+    ```
+  </Step>
+</Steps>
+
+## Enforcement mode
+
+The `ENFORCE_QUOTA_ON_UPLOAD` environment variable controls what happens when the on-chain quota check fails during an upload:
+
+```bash .env
+# true  → upload is blocked when the contract call fails or quota is exceeded
+# false → upload continues with a warning (default)
+ENFORCE_QUOTA_ON_UPLOAD=false
+```
+
+<CardGroup cols={2}>
+  <Card title="ENFORCE_QUOTA_ON_UPLOAD=true" icon="shield-check">
+    The backend submits `updateQuotaAfterUpload` and treats a revert or error as a hard block. The upload is rejected and the file is not pinned to IPFS. Use this in production when quota enforcement must be guaranteed.
+  </Card>
+  <Card title="ENFORCE_QUOTA_ON_UPLOAD=false" icon="triangle-exclamation">
+    The backend attempts `updateQuotaAfterUpload` but continues if the call fails or the quota is not active. A warning is logged. Use this in development or when the contract is not yet deployed.
+  </Card>
+</CardGroup>
+
+<Warning>
+  When `ENFORCE_QUOTA_ON_UPLOAD=false` and `USE_REAL_CONTRACTS=false` (mock mode), no quota check is performed at all. Files are uploaded without any on-chain limit. This is the default out-of-the-box behavior.
+</Warning>
+
+## Querying quota via the API
+
+`GET /blockchain/quota` returns the on-chain quota state for the authenticated user's wallet address. Authentication is required — the endpoint reads the wallet address from the session.
+
+**Response in real contract mode** (`USE_REAL_CONTRACTS=true`):
+
+```json
+{
+  "walletAddress": "0xYourWalletAddress",
+  "mode": "real",
+  "tier": "CUSTOM",
+  "quotaLimitBytes": "5368709120",
+  "usedBytes": "1073741824",
+  "remainingBytes": "4294967296",
+  "usagePercent": 20
+}
+```
+
+**Response in mock mode** (`USE_REAL_CONTRACTS=false`):
+
+```json
+{
+  "walletAddress": "0xYourWalletAddress",
+  "mode": "mock",
+  "quotaLimitBytes": null,
+  "usedBytes": null,
+  "remainingBytes": null,
+  "usagePercent": null
+}
+```
+
+The `tier` field is only present in real mode. The `quotaLimitBytes`, `usedBytes`, and `remainingBytes` fields are returned as strings because Ethereum `uint256` values exceed JavaScript's safe integer range — parse them with `BigInt` when doing arithmetic on the client side.
+
+<Note>
+  The `remainingBytes` field is computed on-chain by `getQuotaStats` as `quotaLimitBytes - usedBytes`, clamped to zero. It is not derived client-side.
+</Note>
+
+## The getQuotaStats function
+
+The `GET /blockchain/quota` endpoint calls `getQuotaStats` on the contract, which returns the full quota state in a single view call:
+
+```solidity contracts/BlockchainDriveUnified.sol
+function getQuotaStats(address userAddress)
+    external
+    view
+    returns (
+        string memory tier,
+        uint256 quotaLimitBytes,
+        uint256 usedBytes,
+        uint256 remainingBytes,
+        uint8 usagePercent,
+        uint256 filesUploaded,
+        uint256 maxFiles,
+        bool isActive,
+        uint256 lastUpdated
+    )
+```
+
+This is a `view` function — it reads state only and costs no gas. The backend accesses return values by named field when ethers v6 populates them, with positional index fallback:
+
+```javascript routes/blockchainRoutes.js
+const stats = await blockchainService.storageContract.getQuotaStats(walletAddress);
+res.json({
+  walletAddress,
+  mode: "real",
+  tier: stats.tier ?? stats[0],
+  quotaLimitBytes: (stats.quotaLimitBytes ?? stats[1])?.toString?.() ?? String(stats[1]),
+  usedBytes: (stats.usedBytes ?? stats[2])?.toString?.() ?? String(stats[2]),
+  remainingBytes: (stats.remainingBytes ?? stats[3])?.toString?.() ?? String(stats[3]),
+  usagePercent: Number(stats.usagePercent ?? stats[4])
+});
+```
+
+## Drive-level quota
+
+In addition to the on-chain quota, Blockchain Drive enforces a per-drive byte limit stored in the MySQL database. Both limits are evaluated independently during an upload — if either is exceeded, the upload is blocked.
+
+<CardGroup cols={2}>
+  <Card title="On-chain quota" icon="link-simple">
+    Stored in the `UserQuota` struct on the contract. Scoped to a wallet address across all drives. Enforced by `updateQuotaAfterUpload`.
+  </Card>
+  <Card title="Drive-level quota" icon="database">
+    Stored in the database alongside the drive record. Scoped to a single drive. Enforced by the Express upload handler before the IPFS pin and contract call.
+  </Card>
+</CardGroup>
+
+A user who is within their on-chain quota but has filled a specific drive's storage limit will still be blocked from uploading to that drive. Similarly, a user whose on-chain quota is exhausted cannot upload to any drive regardless of the individual drive limit.
+
+## Quota transfer between users
+
+The `quotaService.js` service exposes `transferQuota(fromUserId, toUserId, amountBytes)`, which redistributes allocated quota between two users without involving the smart contract. It reads both users' current quota snapshots from the database, verifies the sender has sufficient remaining quota, then calls `assignRoleAndQuota` to deduct from the sender and add to the receiver:
+
+```javascript services/quotaService.js
+export async function transferQuota(fromUserId, toUserId, amountBytes) {
+  const sender = await getQuotaSnapshot(fromUserId);
+  const receiver = await getQuotaSnapshot(toUserId);
+
+  if (sender.remainingBytes < amountBytes) {
+    const err = new Error("Insufficient remaining quota to share with user");
+    err.code = "QUOTA_EXCEEDED";
+    throw err;
+  }
+
+  await assignRoleAndQuota(fromUserId, sender.role, sender.quotaBytes - amountBytes);
+  await assignRoleAndQuota(toUserId, receiver.role, receiver.quotaBytes + amountBytes);
+}
+```
+
+<Note>
+  `transferQuota` operates on the database quota snapshot, not the on-chain `UserQuota` struct. If you also want the transferred amount reflected on-chain, issue a separate `allocateUserQuota` transaction for each affected address.
+</Note>
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Smart contract reference" icon="file-contract" href="/blockchain/smart-contracts">
+    Full function signatures, events, and deployment steps for `BlockchainDriveUnified`.
+  </Card>
+  <Card title="Architecture overview" icon="diagram-project" href="/blockchain/overview">
+    How IPFS, Ethereum, and the Express backend interact end-to-end.
+  </Card>
+</CardGroup>

@@ -1,0 +1,276 @@
+---
+title: 'BlockchainDriveUnified smart contract reference'
+description: 'Solidity function signatures, structs, events, and deployment steps for the unified smart contract that powers file permissions and storage quota.'
+---
+
+Blockchain Drive uses a single Solidity contract — `BlockchainDriveUnified` — that combines quota management and file permission logic in one deployment. You set both `STORAGE_ALLOC_CONTRACT` and `DRIVE_V2_CONTRACT` to the same deployed address, and the backend connects to each function group through its own ABI interface. The contract is written for Solidity `^0.8.20` and has no external dependencies, so it compiles and deploys without modification on any EVM-compatible network.
+
+## Deployment
+
+<Tabs>
+  <Tab title="Hardhat">
+    <Steps>
+      <Step title="Compile the contract">
+        Place `BlockchainDriveUnified.sol` in your `contracts/` directory, then compile:
+
+        ```bash
+        npx hardhat compile
+        ```
+      </Step>
+      <Step title="Write a deploy script">
+        Create `scripts/deploy.js`:
+
+        ```javascript scripts/deploy.js
+        const { ethers } = require("hardhat");
+
+        async function main() {
+          const Contract = await ethers.getContractFactory("BlockchainDriveUnified");
+          const contract = await Contract.deploy();
+          await contract.waitForDeployment();
+          console.log("Deployed to:", await contract.getAddress());
+        }
+
+        main().catch((error) => {
+          console.error(error);
+          process.exitCode = 1;
+        });
+        ```
+      </Step>
+      <Step title="Deploy to your network">
+        ```bash
+        npx hardhat run scripts/deploy.js --network <network>
+        ```
+
+        Replace `<network>` with a network name defined in your `hardhat.config.js` (for example `localhost`, `mumbai`, or `mainnet`).
+      </Step>
+      <Step title="Set environment variables">
+        Copy the deployed address and set both contract variables in your `.env`:
+
+        ```bash .env
+        STORAGE_ALLOC_CONTRACT=0xYourDeployedAddress
+        DRIVE_V2_CONTRACT=0xYourDeployedAddress
+        USE_REAL_CONTRACTS=true
+        ```
+      </Step>
+    </Steps>
+  </Tab>
+  <Tab title="Remix">
+    <Steps>
+      <Step title="Open Remix IDE">
+        Go to [remix.ethereum.org](https://remix.ethereum.org) and create a new file named `BlockchainDriveUnified.sol`.
+      </Step>
+      <Step title="Paste the contract source">
+        Copy the full contents of `contracts/BlockchainDriveUnified.sol` into the editor.
+      </Step>
+      <Step title="Compile">
+        In the **Solidity Compiler** tab, select compiler version `0.8.20` or higher, then click **Compile BlockchainDriveUnified.sol**.
+      </Step>
+      <Step title="Deploy">
+        In the **Deploy & Run Transactions** tab, select your environment (for example **Injected Provider - MetaMask** for a testnet), select `BlockchainDriveUnified` from the contract dropdown, and click **Deploy**. Approve the MetaMask transaction.
+      </Step>
+      <Step title="Copy the address">
+        After deployment, copy the contract address from the **Deployed Contracts** panel and set both `STORAGE_ALLOC_CONTRACT` and `DRIVE_V2_CONTRACT` to this address in your `.env`.
+      </Step>
+    </Steps>
+  </Tab>
+</Tabs>
+
+<Note>
+  The contract comment at the top of the file explicitly states: deploy ONE contract in Remix and set BOTH env vars to this address. The two ABIs used by the backend are compatible with the same contract.
+</Note>
+
+## Data structures
+
+### FileRecord
+
+Stores the on-chain record of an uploaded file. The `fileId` field holds the IPFS CID.
+
+```solidity contracts/BlockchainDriveUnified.sol
+struct FileRecord {
+    address uploader;
+    string fileId;      // app stores CID here
+    string customHash;
+    uint256 sizeBytes;
+    bool exists;
+}
+```
+
+### AccessGrant
+
+Stores a single permission grant for a (file, user) pair.
+
+```solidity contracts/BlockchainDriveUnified.sol
+struct AccessGrant {
+    bool active;
+    string role;        // "viewer" or "editor"
+    uint256 expiresAt;  // 0 = no expiry
+}
+```
+
+<Note>
+  When `expiresAt` is `0`, the grant never expires. When it is non-zero, the contract compares it to `block.timestamp` at the time of each access check.
+</Note>
+
+## File section functions
+
+### recordFile
+
+Called by the backend on every successful upload. Records the uploader's address, the IPFS CID, an optional custom hash, and the file size in bytes.
+
+```solidity contracts/BlockchainDriveUnified.sol
+function recordFile(
+    address userAddress,
+    string memory fileId,
+    string memory customHash,
+    uint256 sizeBytes
+) external
+```
+
+Emits `FileRecorded(uploader, fileId, customHash, sizeBytes)`.
+
+---
+
+### shareFile
+
+Grants a recipient access to a file. Only the file's original uploader or the contract owner can call this function.
+
+```solidity contracts/BlockchainDriveUnified.sol
+function shareFile(
+    string memory fileId,
+    address recipientAddress,
+    string memory role,
+    uint256 expiryDays
+) external
+```
+
+| Parameter | Description |
+|---|---|
+| `fileId` | The IPFS CID of the file to share |
+| `recipientAddress` | Wallet address of the recipient |
+| `role` | `"viewer"` or `"editor"` |
+| `expiryDays` | Days until expiry; `0` means no expiry |
+
+Emits `FileShared(fileId, recipient, role, expiresAt)`.
+
+---
+
+### revokeAccess
+
+Deactivates an existing access grant. Sets `AccessGrant.active` to `false`. Only the original uploader or the contract owner can revoke.
+
+```solidity contracts/BlockchainDriveUnified.sol
+function revokeAccess(
+    string memory fileId,
+    address userAddress
+) external
+```
+
+Emits `AccessRevoked(fileId, userAddress)`.
+
+---
+
+### canUserAccessFile
+
+Pure read function (no gas cost). Returns `true` if the user is allowed to perform the given action on the file.
+
+```solidity contracts/BlockchainDriveUnified.sol
+function canUserAccessFile(
+    address userAddress,
+    string memory fileId,
+    string memory action
+) external view returns (bool)
+```
+
+| `action` value | Who passes |
+|---|---|
+| `"view"` | The file uploader, any active `viewer` grant, any active `editor` grant |
+| `"edit"` | The file uploader, any active `editor` grant |
+
+The function returns `false` for any unknown action string.
+
+The backend calls this function through the `BlockchainService`:
+
+```javascript services/blockchain.js
+async checkPermission(userAddress, fileId, action) {
+  if (this.isMocked) return true;
+  try {
+    return await this.driveContract.canUserAccessFile(userAddress, fileId, action);
+  } catch (error) {
+    return false;
+  }
+}
+```
+
+## Quota section functions
+
+See [Quota management](/blockchain/quota-management) for full details. The quota functions on the contract are:
+
+<AccordionGroup>
+  <Accordion title="allocatePool(poolName, bytesAmount)">
+    Owner-only. Creates a named storage pool. Emits `PoolAllocated`. This function exists for ABI compatibility — it does not gate `allocateUserQuota`.
+
+    ```solidity
+    function allocatePool(string memory poolName, uint256 bytesAmount) external onlyOwner
+    ```
+  </Accordion>
+  <Accordion title="allocateUserQuota(poolName, userAddress, bytesAmount)">
+    Owner-only. Sets the quota limit for a wallet address. Sets the tier to `"CUSTOM"` and activates the quota. If `maxFiles` is currently `0`, it is set to `type(uint256).max`.
+
+    ```solidity
+    function allocateUserQuota(
+        string memory poolName,
+        address userAddress,
+        uint256 bytesAmount
+    ) external onlyOwner
+    ```
+  </Accordion>
+  <Accordion title="updateQuotaAfterUpload(userAddress, fileSizeBytes)">
+    Called after a successful upload. Reverts if the quota is not active or would be exceeded. Increments `usedBytes` and `filesUploaded`, and recalculates `usagePercent`.
+
+    ```solidity
+    function updateQuotaAfterUpload(address userAddress, uint256 fileSizeBytes) external
+    ```
+  </Accordion>
+  <Accordion title="refundQuota(userAddress, fileSizeBytes)">
+    Called when a file is deleted. Decrements `usedBytes` and `filesUploaded`, and recalculates `usagePercent`. Does not revert if the refund would underflow — it clamps to zero instead.
+
+    ```solidity
+    function refundQuota(address userAddress, uint256 fileSizeBytes) external
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Events
+
+All events are emitted to the chain and form the immutable audit trail.
+
+| Event | Parameters | Emitted by |
+|---|---|---|
+| `FileRecorded` | `address indexed uploader, string fileId, string customHash, uint256 sizeBytes` | `recordFile` |
+| `FileShared` | `string fileId, address indexed recipient, string role, uint256 expiresAt` | `shareFile` |
+| `AccessRevoked` | `string fileId, address indexed userAddress` | `revokeAccess` |
+| `QuotaUpdated` | `address indexed userAddress, uint256 usedBytes, uint256 quotaLimitBytes` | `updateQuotaAfterUpload` |
+| `QuotaRefunded` | `address indexed userAddress, uint256 refundedBytes` | `refundQuota` |
+
+## Owner-only functions
+
+The `onlyOwner` modifier restricts `allocatePool` and `allocateUserQuota` to the deployer account. The `owner` address is set in the constructor to `msg.sender`.
+
+```solidity contracts/BlockchainDriveUnified.sol
+address public owner;
+
+constructor() {
+    owner = msg.sender;
+}
+
+modifier onlyOwner() {
+    require(msg.sender == owner, "Only owner");
+    _;
+}
+```
+
+The `ADMIN_PRIVATE_KEY` environment variable must correspond to the wallet that deployed the contract. The backend uses this key to sign all write transactions, including `allocatePool`, `allocateUserQuota`, `recordFile`, `shareFile`, and `revokeAccess`.
+
+<Warning>
+  Never commit your `ADMIN_PRIVATE_KEY` to version control. The `.env.example` file contains a placeholder — copy it to `.env` and keep `.env` in `.gitignore`.
+</Warning>

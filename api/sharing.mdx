@@ -1,0 +1,275 @@
+---
+title: "Sharing — RBAC file sharing and bulk contract shares"
+description: "Share files or drives with role-based access control, or use smart-contract bulk sharing with optional password protection and expiry dates."
+---
+
+Blockchain Drive provides two complementary sharing systems. The first is a classic RBAC model where you grant individual users `viewer` or `editor` access to specific files or an entire drive. The second is a smart-contract-backed bulk sharing mechanism that records share grants on-chain, supports optional password protection, and can be revoked at any time.
+
+All sharing endpoints require an authenticated session cookie.
+
+---
+
+## RBAC file and drive sharing
+
+These endpoints live alongside the drive and file routes and operate on the application-layer permission model.
+
+### POST /share/:id
+
+Grants another user access to a specific file. The caller must be the file owner.
+
+<ParamField path="id" type="number" required>
+  Numeric ID of the file to share.
+</ParamField>
+
+<ParamField body="username" type="string" required>
+  Username of the recipient.
+</ParamField>
+
+<ParamField body="role" type="string" required>
+  Access level: `viewer` (read-only) or `editor` (read and write).
+</ParamField>
+
+<ParamField body="encryptedKey" type="string">
+  The file's encryption key re-encrypted with the recipient's public key. Required when the file is encrypted and you want the recipient to be able to decrypt it. Retrieve the recipient's public key first via `GET /share-target`.
+</ParamField>
+
+```bash
+curl -X POST https://api.blockchaindrive.io/share/123 \
+  -H "Content-Type: application/json" \
+  --cookie "connect.sid=..." \
+  -d '{
+    "username": "bob_eth",
+    "role": "viewer",
+    "encryptedKey": "AAAA...base64..."
+  }'
+```
+
+Returns HTTP `200` on success (no body).
+
+**Errors:** `400` invalid file ID or role, `404` file or target user not found, `403` contract-enforced access denied.
+
+---
+
+### GET /shared-with-me
+
+Lists all files that other users have shared with the authenticated user via RBAC.
+
+```bash
+curl "https://api.blockchaindrive.io/shared-with-me" \
+  --cookie "connect.sid=..."
+```
+
+Returns an array of file objects in the same shape as `GET /files`, augmented with share metadata (role, sharer).
+
+---
+
+### POST /drive/share
+
+Shares the authenticated user's entire default drive with another user. All files within the drive are shared at once. For encrypted drives, `keyShares` must contain a re-encrypted key for each file.
+
+<ParamField body="username" type="string" required>
+  Username of the recipient.
+</ParamField>
+
+<ParamField body="role" type="string" required>
+  Access level: `viewer` or `editor`.
+</ParamField>
+
+<ParamField body="keyShares" type="object">
+  A map of `fileId → encryptedKey` pairs. Each key is the file's encryption key re-encrypted with the recipient's public key. Required for encrypted files; omit for unencrypted drives.
+</ParamField>
+
+```bash
+curl -X POST https://api.blockchaindrive.io/drive/share \
+  -H "Content-Type: application/json" \
+  --cookie "connect.sid=..." \
+  -d '{
+    "username": "bob_eth",
+    "role": "viewer",
+    "keyShares": {
+      "123": "AAAA...base64...",
+      "124": "BBBB...base64..."
+    }
+  }'
+```
+
+Returns HTTP `200` on success.
+
+**Errors:** `400` missing username or invalid role, `404` recipient not found, `403` contract-enforced denial.
+
+---
+
+## Smart-contract bulk sharing
+
+These endpoints are served under the `/api/shares` prefix and use an on-chain share registry for auditability and revocation.
+
+### POST /api/shares/bulk
+
+Creates a bulk share that grants a single recipient access to multiple files at once. The share is recorded on the Ethereum contract when `USE_REAL_CONTRACTS=true`.
+
+<ParamField body="fileIds" type="number[]" required>
+  Array of numeric file IDs to include in the share.
+</ParamField>
+
+<ParamField body="recipientAddress" type="string" required>
+  Ethereum wallet address of the recipient. The recipient must have a Blockchain Drive account.
+</ParamField>
+
+<ParamField body="permissionType" type="string">
+  Access level: `readonly` (default) or `readwrite`.
+</ParamField>
+
+<ParamField body="sharePassword" type="string">
+  Optional password that the recipient must supply to access the share. The password is stored as a bcrypt hash — never in plaintext.
+</ParamField>
+
+<ParamField body="expiresIn" type="number">
+  Number of days until the share automatically expires. Omit for no expiry.
+</ParamField>
+
+```bash
+curl -X POST https://api.blockchaindrive.io/api/shares/bulk \
+  -H "Content-Type: application/json" \
+  --cookie "connect.sid=..." \
+  -d '{
+    "fileIds": [123, 124, 125],
+    "recipientAddress": "0xdef789...",
+    "permissionType": "readonly",
+    "sharePassword": "s3cr3t",
+    "expiresIn": 7
+  }'
+```
+
+Returns the created share object including `shareId`, `transactionHash`, and `expiresAt`.
+
+**Errors:** `404` recipient not found, `400` invalid file IDs or parameters.
+
+---
+
+### GET /api/shares/received
+
+Lists all bulk shares received by the authenticated user.
+
+```bash
+curl "https://api.blockchaindrive.io/api/shares/received" \
+  --cookie "connect.sid=..."
+```
+
+Returns an array of share objects:
+
+<ResponseField name="shareId" type="string" required>Unique share identifier.</ResponseField>
+<ResponseField name="ownerId" type="number" required>ID of the user who created the share.</ResponseField>
+<ResponseField name="fileIds" type="number[]" required>File IDs included in the share.</ResponseField>
+<ResponseField name="permissionType" type="string" required>`readonly` or `readwrite`.</ResponseField>
+<ResponseField name="passwordProtected" type="boolean" required>Whether a password is required to access this share.</ResponseField>
+<ResponseField name="expiresAt" type="string | null" required>ISO 8601 expiry timestamp, or `null` for no expiry.</ResponseField>
+<ResponseField name="revokedAt" type="string | null" required>ISO 8601 timestamp if the share has been revoked, otherwise `null`.</ResponseField>
+<ResponseField name="accessCount" type="number" required>Number of times the share has been accessed.</ResponseField>
+<ResponseField name="transactionHash" type="string | null" required>On-chain transaction hash of the share grant.</ResponseField>
+
+---
+
+### GET /api/shares/received/:shareId
+
+Verifies and retrieves a specific received share. If the share is password-protected, the correct password must be supplied.
+
+<ParamField path="shareId" type="string" required>
+  Share ID from the share object.
+</ParamField>
+
+<ParamField query="password" type="string">
+  Required when `passwordProtected` is `true`.
+</ParamField>
+
+```bash
+curl "https://api.blockchaindrive.io/api/shares/received/abc123?password=s3cr3t" \
+  --cookie "connect.sid=..."
+```
+
+Returns `{ hasAccess: true, ...shareDetails }` on success, or `{ hasAccess: false, error: "..." }` with a `403` when access is denied.
+
+---
+
+### GET /api/shares/sent
+
+Lists all bulk shares created by the authenticated user.
+
+```bash
+curl "https://api.blockchaindrive.io/api/shares/sent" \
+  --cookie "connect.sid=..."
+```
+
+Returns an array of share objects in the same shape as `GET /api/shares/received`.
+
+---
+
+### POST /api/shares/revoke
+
+Revokes a bulk share, immediately preventing the recipient from accessing it.
+
+<ParamField body="shareId" type="string" required>
+  ID of the share to revoke. The caller must be the share owner.
+</ParamField>
+
+```bash
+curl -X POST https://api.blockchaindrive.io/api/shares/revoke \
+  -H "Content-Type: application/json" \
+  --cookie "connect.sid=..." \
+  -d '{"shareId":"abc123"}'
+```
+
+```json
+{ "success": true }
+```
+
+**Error:** `404` if the share does not exist or has already been revoked.
+
+<Warning>
+  Revocation is immediate and permanent. The recipient loses access as soon as this call returns. A revoked share cannot be reinstated — create a new share instead.
+</Warning>
+
+---
+
+### GET /api/shares/stats
+
+Returns aggregate statistics about the authenticated user's sharing activity.
+
+```bash
+curl "https://api.blockchaindrive.io/api/shares/stats" \
+  --cookie "connect.sid=..."
+```
+
+Returns a stats object including counts of sent, received, active, and revoked shares.
+
+---
+
+### GET /api/shares/:shareId/check-access
+
+Checks whether the authenticated user currently has access to a share without logging an access event.
+
+<ParamField path="shareId" type="string" required>
+  Share ID to check.
+</ParamField>
+
+<ParamField query="password" type="string">
+  Required when the share is password-protected.
+</ParamField>
+
+Returns `{ hasAccess: boolean, reason?: string }`.
+
+---
+
+### GET /api/shares/search
+
+Searches shares visible to the authenticated user (both sent and received) by a keyword query.
+
+<ParamField query="q" type="string">
+  Search term matched against share metadata. Defaults to an empty string (returns all shares).
+</ParamField>
+
+```bash
+curl "https://api.blockchaindrive.io/api/shares/search?q=report" \
+  --cookie "connect.sid=..."
+```
+
+Returns an array of matching share objects.

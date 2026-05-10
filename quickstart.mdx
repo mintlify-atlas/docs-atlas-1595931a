@@ -1,81 +1,185 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
-icon: 'rocket'
+title: "Quickstart: Upload Your First File to Blockchain Drive"
+description: "Go from zero to uploading your first file on Blockchain Drive. Install dependencies, configure your environment, and connect MetaMask in minutes."
 ---
 
-## Get started in three steps
+Blockchain Drive runs three processes simultaneously: an Express.js backend (port 5000), a Next.js frontend (port 3000), and an IPFS Kubo daemon (port 5002). This guide walks you through each step to get all three running and upload your first file.
 
-Get your documentation site running locally and make your first customization.
+<Steps>
+  <Step title="Install prerequisites">
+    Before you begin, make sure the following are available on your machine:
 
-### Step 1: Set up your local environment
+    - **Node.js 18 or later** — the backend uses ES modules (`"type": "module"` in `package.json`) and requires Node 18+.
+    - **MetaMask browser extension** — your wallet is your identity; no username/password is used.
+    - **IPFS Kubo daemon** — the backend talks to Kubo's HTTP API. Install Kubo from [docs.ipfs.tech](https://docs.ipfs.tech/install/command-line/) and start it with `ipfs daemon`. Your Kubo API must run on a **different port** than the Express backend — the default Kubo API port used in this project is **5002**.
+    - **MongoDB** — the backend uses MongoDB to store file metadata, users, shares, and drive records. The default connection URI is `mongodb://127.0.0.1:27017` (set via `MONGO_URI`) and the default database name is `ipfs_app` (set via `MONGO_DB_NAME` or `DB_NAME`).
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+    <Note>
+      The IPFS Kubo daemon and the Express API must not share a port. This project defaults to Kubo on **5002** and Express on **5000**. If your Kubo API is on a different port, you will update `IPFS_API_URL` in the next step.
+    </Note>
+  </Step>
 
-### Step 2: Deploy your changes
+  <Step title="Clone and install backend dependencies">
+    Clone the repository and install backend Node.js dependencies from the project root.
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    <CodeGroup>
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+    ```bash Clone the repository
+    git clone https://github.com/ankit-bista/Final-Project.git
+    cd Final-Project
+    ```
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+    ```bash Install backend dependencies
+    npm install
+    ```
 
-### Step 3: Go live
+    </CodeGroup>
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+    The root `package.json` includes `express`, `ethers`, `ipfs-http-client`, `mongodb`, `multer`, `bcrypt`, `express-session`, `tweetnacl`, and other runtime dependencies.
+  </Step>
 
-## Next steps
+  <Step title="Configure environment variables">
+    Copy `.env.example` to `.env` and fill in the values for your environment.
 
-Now that you have your docs running, explore these key features:
+    ```bash Copy the example file
+    cp .env.example .env
+    ```
 
-<CardGroup cols={2}>
+    The key variables to configure:
 
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
+    | Variable | Default | Description |
+    |---|---|---|
+    | `PORT` | `5000` | Express API port |
+    | `SESSION_SECRET` | `my-super-secret-session-key` | Change this in production |
+    | `MONGO_URI` | `mongodb://127.0.0.1:27017` | MongoDB connection URI |
+    | `MONGO_DB_NAME` | `ipfs_app` | MongoDB database name (also accepted as `DB_NAME`) |
+    | `IPFS_API_URL` | `http://127.0.0.1:5002/api/v0` | Kubo daemon HTTP API |
+    | `IPFS_GATEWAY_URL` | `http://127.0.0.1:5002` | Kubo gateway for file retrieval |
+    | `RPC_URL` | `https://rpc-mumbai.maticvigil.com` | Ethereum RPC endpoint |
+    | `STORAGE_ALLOC_CONTRACT` | `0x000...0001` | Deployed quota contract address |
+    | `DRIVE_V2_CONTRACT` | `0x000...0002` | Deployed file access contract address |
+    | `ADMIN_PRIVATE_KEY` | — | Backend wallet private key for contract calls |
+    | `USE_REAL_CONTRACTS` | `false` | Set to `true` to enable live on-chain transactions |
 
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
+    A minimal `.env` for local development looks like this:
 
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
+    ```bash .env (local development)
+    PORT=5000
+    SESSION_SECRET=change-this-before-going-to-production
 
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
+    # MongoDB
+    MONGO_URI=mongodb://127.0.0.1:27017
+    MONGO_DB_NAME=ipfs_app
 
-</CardGroup>
+    # IPFS Kubo daemon (check `ipfs config show | grep API`)
+    IPFS_API_URL=http://127.0.0.1:5002/api/v0
+    IPFS_GATEWAY_URL=http://127.0.0.1:5002
 
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>
+    # Blockchain (mock mode — no real transactions)
+    RPC_URL=https://rpc-mumbai.maticvigil.com
+    STORAGE_ALLOC_CONTRACT=0x0000000000000000000000000000000000000001
+    DRIVE_V2_CONTRACT=0x0000000000000000000000000000000000000002
+    ADMIN_PRIVATE_KEY=your_metamask_private_key_here
+    USE_REAL_CONTRACTS=false
+    ```
+
+    <Tip>
+      Set `USE_REAL_CONTRACTS=false` while prototyping. In this mode the backend accepts all uploads without checking on-chain quota, and file anchoring writes metadata into transaction calldata on a local chain rather than calling the real contract functions.
+    </Tip>
+
+    <Warning>
+      Never commit your `.env` file to version control. The `ADMIN_PRIVATE_KEY` value is the private key of the wallet used for all contract calls. Exposure gives full access to that wallet's funds and contract permissions.
+    </Warning>
+  </Step>
+
+  <Step title="Install and run the frontend">
+    The frontend lives in the `front end` subdirectory and is a Next.js 16 application.
+
+    <CodeGroup>
+
+    ```bash Install frontend dependencies
+    cd "front end"
+    npm install
+    ```
+
+    ```bash Start the Next.js dev server
+    npm run dev
+    ```
+
+    </CodeGroup>
+
+    The Next.js dev server starts on **port 3000** by default. It proxies `/auth`, `/files`, `/upload`, and other API paths to the Express backend, so session cookies work without cross-origin issues.
+  </Step>
+
+  <Step title="Start the backend">
+    From the repository root (not the `front end` directory), start the Express server:
+
+    ```bash Start the backend
+    npm start
+    ```
+
+    This runs `node server.js`. On startup you will see output confirming the API and IPFS configuration:
+
+    ```text Expected startup output
+    === Blockchain Drive backend (Node / Express) ===
+      API (login, files, uploads): http://127.0.0.1:5000
+      This is NOT IPFS. Keep this on a port different from Kubo (often 5002).
+
+    === IPFS (Kubo daemon) — separate process ===
+      IPFS API:     http://127.0.0.1:5002/api/v0
+      IPFS Gateway: http://127.0.0.1:5002
+
+    Node environment: development
+    Blockchain mode: mock
+    ```
+
+    You can verify the backend is healthy by calling the health endpoint:
+
+    ```bash Check backend health
+    curl http://127.0.0.1:5000/health
+    ```
+
+    A healthy response returns `{"ok":true,"database":"connected"}`.
+  </Step>
+
+  <Step title="Connect MetaMask">
+    Open [http://localhost:3000](http://localhost:3000) in a browser with MetaMask installed.
+
+    1. Click **Connect wallet** in the application.
+    2. MetaMask will prompt you to select an account — choose the account you want to use.
+    3. The app fetches a one-time nonce from `GET /auth/nonce` and asks MetaMask to sign it.
+    4. You sign the message — no transaction fee is involved; this is a plain signature.
+    5. The backend calls `ethers.verifyMessage` to recover your address, creates a session, and sets an HTTP-only session cookie (24-hour expiry).
+    6. On first login you will be prompted to choose a username (3–20 characters, letters/numbers/underscores only).
+
+    <Note>
+      Signing the authentication message does not cost gas — it is an off-chain signature, not a blockchain transaction.
+    </Note>
+  </Step>
+
+  <Step title="Upload your first file">
+    Once authenticated, your default personal drive is created automatically.
+
+    1. Click **Upload** in the drive interface.
+    2. Select a file from your local machine.
+    3. Optionally enable **encryption** — if enabled, the file is encrypted with AES on the client using a key derived from your MetaMask wallet before it leaves your browser. Only your wallet can decrypt it.
+    4. Confirm the upload.
+
+    Under the hood, the backend receives the file via multipart form data (handled by `multer`), passes the buffer to `ipfs.add()` in `ipfsService.js`, receives a content identifier (CID) back from Kubo, generates a custom hash, and stores the file record in MongoDB. When `USE_REAL_CONTRACTS=false`, a mock blockchain transaction is written to anchor the file metadata without requiring a deployed contract.
+
+    <CardGroup cols={2}>
+      <Card title="File management" icon="folder-open" href="/features/file-management">
+        Learn how to view, download, rename, and delete files
+      </Card>
+      <Card title="Encryption" icon="lock" href="/features/encryption">
+        Understand how MetaMask-backed AES encryption works
+      </Card>
+      <Card title="Sharing" icon="share-nodes" href="/features/sharing">
+        Share files and drives with role-based access control
+      </Card>
+      <Card title="Smart contracts" icon="file-contract" href="/blockchain/smart-contracts">
+        Deploy the unified contract and enable real on-chain mode
+      </Card>
+    </CardGroup>
+  </Step>
+</Steps>

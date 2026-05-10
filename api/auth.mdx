@@ -1,0 +1,222 @@
+---
+title: "Authentication — MetaMask wallet sign-in with nonces"
+description: "Sign in with an Ethereum wallet via a cryptographic nonce challenge. No passwords stored — identity is proved by signing a server-issued message."
+---
+
+Blockchain Drive uses a wallet-first authentication model. Instead of usernames and passwords, the server issues a one-time nonce that you sign with MetaMask (or any EIP-191-compatible wallet). The server recovers the signer address using `ethers.verifyMessage` and opens a session if it matches. All subsequent requests are authenticated via a session cookie.
+
+<Steps>
+  <Step title="Request a nonce">
+    Call `GET /auth/nonce?address=0x…` with your wallet address. The server creates or updates your account and returns a human-readable message to sign.
+  </Step>
+  <Step title="Sign with MetaMask">
+    In the browser, call `ethereum.request({ method: 'personal_sign', params: [nonce, address] })` to produce a signature.
+  </Step>
+  <Step title="Verify the signature">
+    POST the address and signature to `POST /auth/verify`. The server recovers the signer address, compares it, and sets a session cookie on success.
+  </Step>
+  <Step title="Session established">
+    All subsequent API calls are authenticated via the session cookie. If `needsUsername` is `true`, prompt the user to choose one before continuing.
+  </Step>
+</Steps>
+
+---
+
+## GET /auth/nonce
+
+Returns a one-time message for the wallet to sign. Calling this endpoint a second time with the same address invalidates the previous nonce.
+
+### Request
+
+<ParamField query="address" type="string" required>
+  Ethereum wallet address (checksummed or lowercase). Normalized to lowercase internally.
+</ParamField>
+
+### Response
+
+<ResponseField name="nonce" type="string" required>
+  A human-readable string containing a random 16-byte hex value. Pass this verbatim to `personal_sign`.
+</ResponseField>
+
+```bash
+curl "https://api.blockchaindrive.io/auth/nonce?address=0xabc123..."
+```
+
+```json
+{
+  "nonce": "Welcome to Blockchain Drive! To authenticate, please sign this random nonce: 4f2a8c..."
+}
+```
+
+### Errors
+
+| Status | Condition |
+|--------|-----------|
+| `400`  | `address` query param is missing or not a string |
+| `500`  | Database error while reading or creating the user record |
+
+---
+
+## POST /auth/verify
+
+Verifies the wallet signature and opens an authenticated session. On success the server sets a `connect.sid` session cookie.
+
+### Request body
+
+<ParamField body="address" type="string" required>
+  The same Ethereum wallet address used to fetch the nonce.
+</ParamField>
+
+<ParamField body="signature" type="string" required>
+  The hex-encoded signature returned by `personal_sign`.
+</ParamField>
+
+```bash
+curl -X POST https://api.blockchaindrive.io/auth/verify \
+  -H "Content-Type: application/json" \
+  -d '{"address":"0xabc123...","signature":"0xdef456..."}'
+```
+
+### Response
+
+<ResponseField name="success" type="boolean" required>
+  Always `true` on a successful verification.
+</ResponseField>
+
+<ResponseField name="userId" type="number" required>
+  Internal database ID of the authenticated user.
+</ResponseField>
+
+<ResponseField name="username" type="string | null" required>
+  The user's chosen username, or `null` if one has not been set yet.
+</ResponseField>
+
+<ResponseField name="needsUsername" type="boolean" required>
+  `true` when the user has never set a username. Redirect to the username setup screen before allowing other actions.
+</ResponseField>
+
+```json
+{
+  "success": true,
+  "userId": 42,
+  "username": null,
+  "needsUsername": true
+}
+```
+
+### Errors
+
+| Status | Condition |
+|--------|-----------|
+| `401`  | Signature does not match the stored nonce, nonce was never generated, or user not found |
+| `500`  | Database error or session save failure |
+
+<Note>
+  If the wallet address matches the `MAIN_ADMIN_WALLET` environment variable, the account is automatically promoted to the `admin` role on first sign-in.
+</Note>
+
+---
+
+## POST /auth/username
+
+Sets or updates the display username for the authenticated user. Required before most drive operations when `needsUsername` is `true`.
+
+<Warning>
+  Requires an active session cookie. Returns `401` if the session is missing or expired.
+</Warning>
+
+### Request body
+
+<ParamField body="username" type="string" required>
+  3–20 characters. Only ASCII letters, digits, and underscores (`_`) are allowed. Leading and trailing whitespace is stripped before validation.
+</ParamField>
+
+```bash
+curl -X POST https://api.blockchaindrive.io/auth/username \
+  -H "Content-Type: application/json" \
+  --cookie "connect.sid=..." \
+  -d '{"username":"alice_eth"}'
+```
+
+### Response
+
+<ResponseField name="success" type="boolean" required>
+  Always `true` on success.
+</ResponseField>
+
+<ResponseField name="username" type="string" required>
+  The trimmed, saved username.
+</ResponseField>
+
+```json
+{ "success": true, "username": "alice_eth" }
+```
+
+### Errors
+
+| Status | Condition |
+|--------|-----------|
+| `400`  | Missing, wrong type, too short (< 3), too long (> 20), or contains invalid characters |
+| `409`  | Username is already taken by another account |
+
+---
+
+## POST /auth/encryption-key
+
+Stores the user's MetaMask encryption public key. This key is returned to other users looking up a share target so they can encrypt file keys for end-to-end encrypted sharing.
+
+<Warning>
+  Requires an active session cookie.
+</Warning>
+
+### Request body
+
+<ParamField body="encryptionPublicKey" type="string" required>
+  The base64-encoded public key exported from MetaMask via `eth_getEncryptionPublicKey`. Leading and trailing whitespace is stripped.
+</ParamField>
+
+```bash
+curl -X POST https://api.blockchaindrive.io/auth/encryption-key \
+  -H "Content-Type: application/json" \
+  --cookie "connect.sid=..." \
+  -d '{"encryptionPublicKey":"AAAA...base64..."}'
+```
+
+### Response
+
+<ResponseField name="success" type="boolean" required>
+  Always `true` on success.
+</ResponseField>
+
+```json
+{ "success": true }
+```
+
+<Tip>
+  Call this endpoint once after first login and again if the user switches MetaMask accounts, so that other users can always encrypt shared file keys for the correct public key.
+</Tip>
+
+---
+
+## POST /auth/logout
+
+Destroys the server-side session. The session cookie is invalidated immediately.
+
+<Warning>
+  Requires an active session cookie. Returns `401` if already logged out.
+</Warning>
+
+```bash
+curl -X POST https://api.blockchaindrive.io/auth/logout \
+  --cookie "connect.sid=..."
+```
+
+### Response
+
+<ResponseField name="success" type="boolean" required>
+  Always `true` when the session was destroyed successfully.
+</ResponseField>
+
+```json
+{ "success": true }
+```

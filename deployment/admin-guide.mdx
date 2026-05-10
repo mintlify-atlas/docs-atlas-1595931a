@@ -1,0 +1,109 @@
+---
+title: 'Admin guide for managing Blockchain Drive users'
+description: 'Use the Blockchain Drive admin panel to manage users, assign roles and on-chain storage quotas, and delete accounts. Covers all admin-only API endpoints.'
+---
+
+Blockchain Drive includes an admin panel that lets privileged users view all accounts, control what each user can do, and allocate on-chain storage quotas. Admin access is role-based: the backend checks whether the logged-in user holds the `admin` role before executing any admin operation. This guide explains how admin access is granted and how to use each admin feature.
+
+## Admin access
+
+The wallet address stored in `MAIN_ADMIN_WALLET` is granted the `admin` role automatically the first time that wallet logs in. No manual database entry is required. All other users start as `commenter` by default.
+
+<Note>
+Only one wallet address is bootstrapped via `MAIN_ADMIN_WALLET`. Additional admin accounts must be promoted manually by an existing admin using the role assignment feature described below.
+</Note>
+
+After logging in, the admin user can access the admin panel. Every admin endpoint requires an active authenticated session; unauthenticated requests receive `401 Not authenticated` and non-admin sessions receive `403 Admin access required`.
+
+## User management
+
+The admin panel gives you a full view of every registered account, including each user's current storage consumption.
+
+Fetching all users calls `GET /api/admin/users`. The response is a list of user objects, each including the fields returned by the database plus a computed `storage_used` field (in bytes) derived from the files that user has uploaded.
+
+Use this view to identify users who are approaching their quota, to audit who has which role, or to find accounts to promote or remove.
+
+## Roles
+
+Blockchain Drive defines three user roles with distinct capability sets.
+
+<CardGroup cols={3}>
+  <Card title="commenter" icon="message-circle">
+    Can read files and add comments. Cannot upload files or manage other users. This is the default role for new accounts.
+  </Card>
+  <Card title="uploader" icon="upload">
+    Can upload files and add comments. Cannot manage other users or bypass quota limits.
+  </Card>
+  <Card title="admin" icon="shield">
+    Full access: upload files, add comments, manage users, and bypass quota restrictions. Required for all admin panel actions.
+  </Card>
+</CardGroup>
+
+<Note>
+The `viewer` role is not currently defined in the codebase. Any unrecognised role string is normalised to `commenter` by the backend.
+</Note>
+
+### Assigning a role
+
+To change a user's role, submit a `POST /api/admin/users/:id/access` request with the user's database ID in the path and the desired role in the request body:
+
+```json
+{
+  "role": "uploader",
+  "quotaBytes": 5368709120
+}
+```
+
+The `quotaBytes` field is optional when you only want to change the role, and `role` is optional when you only want to change the quota. Both fields can be set in the same request. The backend normalises the role value to lowercase and falls back to `commenter` for any unrecognised string.
+
+## Quota allocation
+
+Storage quotas are enforced in two layers: the database records a `quota_bytes` value per user, and the smart contracts track on-chain allocations. When `ENFORCE_QUOTA_ON_UPLOAD=true`, a user cannot upload a file if doing so would exceed their on-chain quota.
+
+Allocating quota through the admin panel involves two sequential on-chain transactions:
+
+<Steps>
+  <Step title="Allocate a storage pool">
+    Before assigning quota to individual users, a named storage pool must exist on-chain. Call `POST /api/admin/pool/allocate` to create one:
+
+    ```json
+    {
+      "poolName": "general-pool",
+      "bytesAmount": 107374182400
+    }
+    ```
+
+    This invokes `allocatePool` on the `STORAGE_ALLOC_CONTRACT`. The `bytesAmount` is the total capacity of the pool in bytes.
+  </Step>
+  <Step title="Assign quota to a user">
+    Once a pool exists, assign a portion of it to a specific user wallet. Call `POST /api/admin/quota/allocate`:
+
+    ```json
+    {
+      "poolName": "general-pool",
+      "userAddress": "0xUserWalletAddress",
+      "bytesAmount": 5368709120
+    }
+    ```
+
+    This invokes `allocateUserQuota` on the contract, crediting the specified number of bytes to that wallet address on-chain.
+  </Step>
+</Steps>
+
+<Tip>
+Set `quotaBytes` in the role-assignment request at the same time so the database record stays in sync with the on-chain allocation. The database value is what the UI displays; the on-chain value is what enforces upload limits.
+</Tip>
+
+## Deleting a user
+
+Admins can permanently remove a user account and all associated data. In the admin panel, locate the user and confirm the delete action. This calls `DELETE /api/admin/users/:id` with the user's database ID.
+
+<Warning>
+Deleting a user is irreversible. The user's account, metadata, and all associated records are permanently removed from the database. Files already pinned to IPFS are content-addressed and cannot be removed by this action alone, but the user will lose access and their data will no longer appear in the application.
+</Warning>
+
+If the user ID does not exist, the endpoint returns `404 User not found`. On success it returns:
+
+```json
+{ "success": true, "message": "User deleted" }
+```

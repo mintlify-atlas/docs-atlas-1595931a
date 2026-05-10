@@ -1,0 +1,128 @@
+---
+title: 'Organize files with drives and folders'
+description: 'Organize files in personal or collaborative drives. Invite members, assign roles, enforce per-drive storage quotas, and navigate nested folders easily.'
+---
+
+Blockchain Drive organizes storage into **drives**. Every user gets a personal drive automatically. You can also create collaborative drives and invite other users to them. Within any drive, you can create nested folders to group related files.
+
+## Personal drive
+
+When you sign in for the first time, the server calls `ensureDefaultDriveForUser` and creates a drive named "Default" on your behalf. You are automatically the **admin** of your personal drive. The personal drive has no quota limit (`Number.MAX_SAFE_INTEGER` bytes), so it is bounded only by your account-level storage quota.
+
+Your personal drive is labelled **Default** in the drive selector and cannot be deleted.
+
+## Collaborative drives
+
+Collaborative drives are shared workspaces. You create one, set a storage quota, and invite other users by username or wallet address.
+
+<Steps>
+  <Step title="Create a drive">
+    In the **Collaborative Drive** view, click **New Drive**. Enter a name for the drive. You can also set a quota limit in bytes at creation time.
+  </Step>
+  <Step title="Invite members">
+    Click **Invite**. Enter a username or wallet address and choose a role: **admin**, **editor**, or **viewer**. The user is added to the drive immediately.
+  </Step>
+  <Step title="Manage and upload">
+    Once created, the drive appears in the drive selector. Members can upload files, create folders, and download files according to their role.
+  </Step>
+</Steps>
+
+<Note>
+  Creating a drive automatically makes you its **admin**. Only admins can invite or remove other members and update the drive quota.
+</Note>
+
+## Drive roles and permissions
+
+Every drive member has one of three roles. The table below summarizes what each role can do.
+
+| Permission | Admin | Editor | Viewer |
+|---|:---:|:---:|:---:|
+| View and download files | Yes | Yes | Yes |
+| Upload files | Yes | Yes | No |
+| Create folders | Yes | Yes | No |
+| Delete own files | Yes | Yes | No |
+| Delete any file | Yes | No | No |
+| Invite members | Yes | No | No |
+| Remove members | Yes | No | No |
+| Update drive quota | Yes | No | No |
+
+<Note>
+  An editor can only delete files they uploaded themselves. A drive admin can delete any file in the drive regardless of who uploaded it.
+</Note>
+
+## Folders
+
+Folders help you group files within a drive. They can be nested to any depth.
+
+<Steps>
+  <Step title="Create a folder">
+    Navigate to the location where you want the folder. Click **New Folder**, enter a name in the `NewFolderDialog`, and confirm. The folder is created inside the current folder, or at the drive root if you are not inside a folder.
+  </Step>
+  <Step title="Navigate into a folder">
+    Click a folder in the browser to enter it. The breadcrumb trail at the top of the page updates to show your current path.
+  </Step>
+  <Step title="Navigate up">
+    Click any segment of the breadcrumb trail to jump back to that level. Click the drive name to return to the root.
+  </Step>
+</Steps>
+
+Files and folders are displayed together in the browser, with folders sorted to the top. The search bar filters both files and folders by name within the current view.
+
+## Storage quotas
+
+Each collaborative drive has a `quotaLimitBytes` value. When a member uploads a file, the server checks whether the current usage plus the new file's size would exceed the limit.
+
+- If the limit is exceeded, the upload returns **HTTP 403** with error code `DRIVE_QUOTA_EXCEEDED`.
+- Usage is tracked incrementally — it increases on upload and is recalculated after a deletion.
+- A `quotaLimitBytes` of `0` means no limit is enforced for that drive.
+
+<Warning>
+  If a drive reaches its quota, no member (including admins) can upload new files until an admin increases the quota limit or files are deleted to free up space.
+</Warning>
+
+### Updating the quota
+
+Only drive **admins** can change the quota. In the Collaborative Drive view, open the drive settings and enter a new quota value in bytes. You can also call the API directly:
+
+```json
+// POST /api/drives/:driveId/quota
+{ "quotaLimitBytes": 5368709120 }
+```
+
+The example above sets the quota to 5 GB.
+
+## Managing members
+
+### Inviting a member
+
+```json
+// POST /api/drives/:driveId/invite
+{
+  "identifier": "alice",
+  "role": "editor"
+}
+```
+
+The `identifier` field accepts a username or an Ethereum wallet address. The user must already have an account in Blockchain Drive.
+
+### Removing a member
+
+Only admins can remove members. Call `DELETE /api/drives/:driveId/members/:userId`, or use the member list in the drive settings panel.
+
+<Note>
+  Removing a member does not delete the files they uploaded. Their files remain in the drive and continue to count against the drive's quota.
+</Note>
+
+### Listing members
+
+Any member can view the full member list:
+
+```
+GET /api/drives/:driveId/members
+```
+
+The response includes each member's user ID, username, role, and the ID of the user who invited them.
+
+## Drive activity log
+
+Every significant action in a collaborative drive — file uploads, folder creation, member invitations and removals, and quota changes — is recorded in an activity log. The log is stored internally and available for audit purposes.
